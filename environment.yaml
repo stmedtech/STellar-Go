@@ -1,0 +1,10 @@
+name: mpl-tutorial
+channels:
+- anaconda
+- defaults
+- conda-forge
+dependencies:
+- matplotlib
+- pandas
+- scipy
+- pytorch-gpu

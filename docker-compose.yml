@@ -1,0 +1,25 @@
+services:
+  bootstrap:
+    build: .
+    command: node -port 43210 -b64privkey OqMbrJvWP4WqTWlAsP13t9SF9N01xH26bzYWqOGeS+h6Or5xJslRCURpxha/n0HCr0TSUDpZ8kzdtXY66FIEBQ== -bootstrapper
+    ports:
+      - 43210:43210
+    volumes:
+      - ./cache/.conda:/root/.conda
+      - ./cache/stellar:/root/.local/share/Stellar
+      - ./test.py:/app/test.py
+      - ./environment.yaml:/app/environment.yaml
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+  node:
+    build: .
+    command: node -reference_token ${DEVICE_REFERENCE_TOKEN}
+    volumes:
+      - ./bootstrappers.txt:/app/bootstrappers.txt
+    deploy:
+      replicas: 2
