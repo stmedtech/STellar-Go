@@ -12,7 +12,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 )
 
-var logger = golog.Logger("stellar-p2p-echo")
+var logger = golog.Logger("stellar-p2p-protocols-echo")
 
 func BindEchoStream(n *node.Node) {
 	n.Host.SetStreamHandler(constant.StellarEchoProtocol, func(s network.Stream) {

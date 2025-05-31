@@ -17,7 +17,7 @@ import (
 	manet "github.com/multiformats/go-multiaddr/net"
 )
 
-var logger = golog.Logger("stellar-p2p-proxy")
+var logger = golog.Logger("stellar-p2p-protocols-proxy")
 
 // ProxyService provides HTTP proxying on top of libp2p by launching an
 // HTTP server which tunnels the requests to a destination peer running

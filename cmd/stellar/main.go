@@ -15,7 +15,9 @@ func main() {
 
 	golog.SetLogLevel("stellar", "info")
 	golog.SetLogLevel("stellar-p2p-node", "debug")
-	golog.SetLogLevel("stellar-p2p-proxy", "info")
+	golog.SetLogLevel("stellar-p2p-bootstrap", "info")
+	golog.SetLogLevel("stellar-p2p-protocols-proxy", "info")
+	golog.SetLogLevel("stellar-p2p-protocols-echo", "info")
 	// golog.SetAllLoggers(golog.LevelInfo)
 
 	flag.Usage = func() {
