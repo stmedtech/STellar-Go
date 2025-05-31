@@ -18,3 +18,9 @@ const (
 const StellarProxyProtocol protocol.ID = "/stellar-proxy/1.0.0"
 
 const StellarFileProtocol protocol.ID = "/stellar-file/1.0.0"
+
+const (
+	StellarFileUnknownCommand string = "unkown"
+	StellarFileList           string = "ls"
+	StellarFileGet            string = "get"
+)

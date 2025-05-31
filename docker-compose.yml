@@ -9,6 +9,7 @@ services:
       - ./cache/stellar:/root/.local/share/Stellar
       - ./test.py:/app/test.py
       - ./environment.yaml:/app/environment.yaml
+      - ./data/test:/app/data
     deploy:
       resources:
         reservations:

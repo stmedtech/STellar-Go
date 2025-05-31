@@ -18,6 +18,7 @@ func main() {
 	golog.SetLogLevel("stellar-p2p-bootstrap", "info")
 	golog.SetLogLevel("stellar-p2p-protocols-proxy", "info")
 	golog.SetLogLevel("stellar-p2p-protocols-echo", "info")
+	golog.SetLogLevel("stellar-p2p-protocols-file", "info")
 	// golog.SetAllLoggers(golog.LevelInfo)
 
 	flag.Usage = func() {

@@ -7,6 +7,7 @@ import (
 	"os"
 	"stellar/p2p/node"
 	"stellar/p2p/protocols/echo"
+	"stellar/p2p/protocols/file"
 	"stellar/p2p/protocols/proxy"
 	"strconv"
 	"strings"
@@ -75,6 +76,7 @@ func nodeCommand() {
 	}
 	n.ReferenceToken = *referenceToken
 	echo.BindEchoStream(n)
+	file.BindFileStream(n)
 
 	pManager := proxy.NewProxyManager(n)
 
@@ -93,6 +95,47 @@ func nodeCommand() {
 			words := strings.Split(line, " ")
 			logger.Warnf("cmd: %v", words)
 			switch strings.ToLower(words[0]) {
+			case "ls":
+				if len(words) != 2 {
+					logger.Warnf("args wrong: %v", words)
+					continue
+				}
+
+				id := words[1]
+				device, deviceErr := n.GetDevice(id)
+				if deviceErr != nil {
+					logger.Warn(deviceErr)
+					continue
+				}
+
+				go func() {
+					files, lsErr := file.List(n, device.ID)
+					if lsErr != nil {
+						logger.Warn(lsErr)
+					}
+					logger.Infof("Device %v ls: %v", device.ID, files)
+				}()
+			case "gf":
+				if len(words) != 3 {
+					logger.Warnf("args wrong: %v", words)
+					continue
+				}
+
+				id := words[1]
+				device, deviceErr := n.GetDevice(id)
+				if deviceErr != nil {
+					logger.Warn(deviceErr)
+					continue
+				}
+				fileName := words[2]
+
+				go func() {
+					if filePath, err := file.Download(n, device.ID, fileName); err != nil {
+						logger.Warn(err)
+					} else {
+						logger.Infof("file downloaded at %v", filePath)
+					}
+				}()
 			case "ps":
 				logger.Infof("Number of proxies: %v", len(pManager.Proxies()))
 			case "p":
