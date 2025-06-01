@@ -56,7 +56,7 @@ func tcpStreamHandler(stream network.Stream) {
 		return
 	}
 	p.stream = stream
-	defer p.Close("proxy closed", nil)
+	defer p.Close("proxy closed%v", nil)
 
 	p.Start()
 }
@@ -65,10 +65,6 @@ func (p *TcpProxyService) Bind() {
 	p.node.Host.SetStreamHandler(constant.StellarProxyProtocol, tcpStreamHandler)
 
 	logger.Info("TCP Proxy server is ready")
-	logger.Info("libp2p-peer addresses:")
-	for _, a := range p.node.Host.Addrs() {
-		logger.Infof("%s/ipfs/%s", a, p.node.Host.ID())
-	}
 }
 
 func (p *TcpProxyService) Close() {
@@ -168,7 +164,7 @@ func (p *TcpProxyService) acceptConnection(conn *net.TCPConn, id string, laddr, 
 
 	proxy := NewLocal(conn, laddr, raddr, stream)
 	proxy.Nagles = false
-	defer proxy.Close("proxy closed", nil)
+	defer proxy.Close("proxy closed%v", nil)
 
 	remoteProxy := proxy.ToRemoteProxy()
 	jsonData, err := json.Marshal(remoteProxy)
@@ -251,7 +247,7 @@ func (p *RemoteProxy) Close(s string, err error) {
 		return
 	}
 	if err != io.EOF {
-		logger.Warn(s, err)
+		logger.Warnf(s, err)
 	}
 	p.errsig <- true
 	p.closed = true
@@ -367,7 +363,7 @@ func (p *Proxy) pipe(ctx context.Context, src, dst io.ReadWriter) {
 
 		select {
 		case <-ctx.Done():
-			p.Close("context done", nil)
+			p.Close("context done%v", nil)
 			return
 		default:
 			n, err := src.Read(buff)

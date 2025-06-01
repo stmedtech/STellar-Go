@@ -37,7 +37,6 @@ func nodeCommand() {
 	// Connection
 	listenHost := nodeCmd.String("host", "0.0.0.0", "set listening host")
 	listenPort := nodeCmd.Int("port", 0, "set listening port")
-	bootstrapper := nodeCmd.Bool("bootstrapper", false, "use this node as bootstrapper node for bootstrapping")
 
 	// Key
 	seed := nodeCmd.Int64("seed", 0, "set random seed for id generation")
@@ -68,7 +67,6 @@ func nodeCommand() {
 	n, nodeErr := node.NewNode(
 		*listenHost,
 		uint64(*listenPort),
-		*bootstrapper,
 		opts...,
 	)
 	if nodeErr != nil {
@@ -231,9 +229,10 @@ func nodeCommand() {
 			case "np":
 				logger.Infof("Number of peers: %v", len(n.Host.Network().Peers()))
 			case "ds":
+				n.UpdateDevices()
 				logger.Infof("Total %v of devices", len(n.Devices))
 				for _, device := range n.Devices {
-					logger.Infof("Device: %v", device)
+					logger.Infof("Device %v: %v", device.ID, device.Status)
 				}
 			}
 		}

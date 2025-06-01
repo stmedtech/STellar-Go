@@ -23,6 +23,7 @@ func BindEchoStream(n *node.Node) {
 			s.Close()
 		}
 	})
+	logger.Info("Echo protocol is ready")
 }
 
 func doStellarEcho(n *node.Node, s network.Stream) error {
@@ -46,7 +47,6 @@ func doStellarEcho(n *node.Node, s network.Stream) error {
 		device := node.Device{
 			ID:             n.ID(),
 			ReferenceToken: n.ReferenceToken,
-			RelayAddr:      n.RelayAddr,
 			SysInfo:        sysInfo,
 		}
 		jsonData, jsonErr := json.Marshal(device)

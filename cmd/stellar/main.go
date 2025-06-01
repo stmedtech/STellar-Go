@@ -27,13 +27,15 @@ func main() {
 	}
 
 	if len(os.Args) < 2 {
-		fmt.Println("expected 'key' or 'node' subcommands")
+		fmt.Println("expected 'key', 'bootstrapper' or 'node' subcommands")
 		os.Exit(1)
 	}
 
 	switch os.Args[1] {
 	case "key":
 		keyCommand()
+	case "bootstrapper":
+		bootstrapperCommand()
 	case "node":
 		nodeCommand()
 	case "test":

@@ -40,6 +40,7 @@ func BindFileStream(n *node.Node) {
 			s.Close()
 		}
 	})
+	logger.Info("File protocol is ready")
 }
 
 type FileEntry struct {

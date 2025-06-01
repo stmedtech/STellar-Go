@@ -102,10 +102,6 @@ func (p *ProxyService) Bind() {
 	p.host.SetStreamHandler(constant.StellarProxyProtocol, streamHandler)
 
 	logger.Info("Proxy server is ready")
-	logger.Info("libp2p-peer addresses:")
-	for _, a := range p.host.Addrs() {
-		logger.Infof("%s/ipfs/%s", a, p.host.ID())
-	}
 }
 
 // Serve listens on the ProxyService's proxy address. This effectively
