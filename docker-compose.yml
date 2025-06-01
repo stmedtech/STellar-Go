@@ -11,7 +11,7 @@ x-defaults: &defaults
 services:
   bootstrap:
     build: .
-    command: bootstrapper -port 43210 -b64privkey Tvp4lQ1LjhXJRbLzueCf9FvaJz+Gku7ng416JM1hCHR16pbh2T0RWxBAjN15ik6f/0+nObZDqgg072yX1YgF/g== -relay -debug
+    command: bootstrapper -port 43210 -b64privkey ${BOOTSTRAP_KEY} -relay -debug
     ports:
       - 43210:43210
       - 5001:5001
