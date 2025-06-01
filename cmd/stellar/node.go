@@ -95,7 +95,7 @@ func nodeCommand() {
 			words := strings.Split(line, " ")
 			logger.Warnf("cmd: %v", words)
 			switch strings.ToLower(words[0]) {
-			case "ls":
+			case "tree":
 				if len(words) != 2 {
 					logger.Warnf("args wrong: %v", words)
 					continue
@@ -109,7 +109,45 @@ func nodeCommand() {
 				}
 
 				go func() {
-					files, lsErr := file.List(n, device.ID)
+					files, lsErr := file.ListFullTree(n, device.ID)
+					if lsErr != nil {
+						logger.Warn(lsErr)
+						return
+					}
+
+					var logRecur func(depth int, fs []file.FileEntry)
+					logRecur = func(depth int, fs []file.FileEntry) {
+						for _, f := range fs {
+							ending := ""
+							if f.IsDir {
+								ending = "/"
+							}
+							logger.Infof("%v%v%v", strings.Repeat("-", depth*2)+" ", f.Filename, ending)
+							if len(f.Children) > 0 {
+								logRecur(depth+1, f.Children)
+							}
+						}
+					}
+					logger.Infof("Device %v ls full tree:", device.ID)
+					logRecur(0, files)
+				}()
+			case "ls":
+				if len(words) != 3 {
+					logger.Warnf("args wrong: %v", words)
+					continue
+				}
+
+				id := words[1]
+				device, deviceErr := n.GetDevice(id)
+				if deviceErr != nil {
+					logger.Warn(deviceErr)
+					continue
+				}
+
+				relativePath := words[2]
+
+				go func() {
+					files, lsErr := file.List(n, device.ID, relativePath)
 					if lsErr != nil {
 						logger.Warn(lsErr)
 					}

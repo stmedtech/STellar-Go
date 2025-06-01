@@ -22,5 +22,6 @@ services:
     command: node -reference_token ${DEVICE_REFERENCE_TOKEN}
     volumes:
       - ./bootstrappers.txt:/app/bootstrappers.txt
+      - ./data/test:/app/data
     deploy:
       replicas: 2

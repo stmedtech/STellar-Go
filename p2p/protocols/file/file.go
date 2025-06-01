@@ -42,6 +42,14 @@ func BindFileStream(n *node.Node) {
 	})
 }
 
+type FileEntry struct {
+	DirectoryName string
+	Filename      string
+	Size          int64
+	IsDir         bool
+	Children      []FileEntry
+}
+
 type FileInfo struct {
 	Filename string
 	Size     int64
@@ -70,22 +78,52 @@ func doStellarFile(n *node.Node, s network.Stream) error {
 	response := ""
 	switch str {
 	case constant.StellarFileList:
-		files := make([]string, 0)
-
-		entries, err := os.ReadDir(dataDir)
+		_, err = s.Write([]byte(fmt.Sprintf("%v\n", constant.StellarPong)))
 		if err != nil {
 			return err
 		}
 
+		relativePath, err := buf.ReadString('\n')
+		if err != nil {
+			return err
+		}
+		relativePath = strings.Trim(relativePath, "\n")
+		relativePath = strings.Trim(relativePath, "/")
+		relativePath = filepath.ToSlash(relativePath)
+		dirPath := filepath.Join(dataDir, relativePath)
+
+		entries, err := os.ReadDir(dirPath)
+		if err != nil {
+			return err
+		}
+
+		files := make([]FileEntry, 0)
 		for _, e := range entries {
-			files = append(files, e.Name())
+			isDir := e.IsDir()
+			size := int64(0)
+			if !isDir {
+				fi, fiErr := os.Stat(filepath.Join(dirPath, e.Name()))
+				if fiErr != nil {
+					logger.Warnf("file ls error while reading file entry: %v", fiErr)
+					continue
+				}
+
+				size = fi.Size()
+			}
+
+			files = append(files, FileEntry{
+				Filename:      e.Name(),
+				DirectoryName: relativePath,
+				Size:          size,
+				IsDir:         e.IsDir(),
+			})
 		}
 		jsonData, jsonErr := json.Marshal(files)
 		if jsonErr != nil {
 			return jsonErr
 		}
-		response = string(jsonData)
-		_, err = s.Write([]byte(response))
+
+		_, err = s.Write([]byte(fmt.Sprintf("%v\n", string(jsonData))))
 		return err
 	case constant.StellarFileGet:
 		_, err = s.Write([]byte(fmt.Sprintf("%v\n", constant.StellarPong)))
@@ -98,6 +136,7 @@ func doStellarFile(n *node.Node, s network.Stream) error {
 			return err
 		}
 		fileName = strings.Trim(fileName, "\n")
+		fileName = filepath.ToSlash(fileName)
 		fileName = filepath.Join(dataDir, fileName)
 
 		fi, err := os.Stat(fileName)
@@ -153,34 +192,84 @@ func doStellarFile(n *node.Node, s network.Stream) error {
 	}
 }
 
-func List(n *node.Node, peer peer.ID) ([]string, error) {
-	files := make([]string, 0)
+func List(n *node.Node, peer peer.ID, relativePath string) (files []FileEntry, err error) {
+	files = make([]FileEntry, 0)
+	err = nil
 
 	s, err := n.Host.NewStream(n.CTX, peer, constant.StellarFileProtocol)
 	if err != nil {
-		return files, err
+		return
 	}
 	defer s.Close()
 
+	buf := bufio.NewReader(s)
 	_, err = s.Write([]byte(fmt.Sprintf("%v\n", constant.StellarFileList)))
 	if err != nil {
-		return files, err
+		return
 	}
 
-	data, err := io.ReadAll(s)
+	data, err := buf.ReadString('\n')
 	if err != nil {
-		return files, err
+		return
 	}
-	if string(data) == constant.StellarEchoUnknownCommand {
-		return files, err
+	data = strings.Trim(data, "\n")
+	if data == constant.StellarEchoUnknownCommand {
+		err = fmt.Errorf("file unknown command")
+		return
+	}
+	if data != constant.StellarPong {
+		err = fmt.Errorf("file get not receiving pong ack")
+		return
 	}
 
-	decodeErr := json.Unmarshal(data, &files)
+	_, err = s.Write([]byte(fmt.Sprintf("%v\n", filepath.ToSlash(relativePath))))
+	if err != nil {
+		return
+	}
+
+	data, err = buf.ReadString('\n')
+	if err != nil {
+		return
+	}
+	data = strings.Trim(data, "\n")
+	if data == constant.StellarEchoUnknownCommand {
+		return
+	}
+
+	decodeErr := json.Unmarshal([]byte(data), &files)
 	if decodeErr != nil {
-		return files, decodeErr
+		err = decodeErr
+		return
 	}
 
-	return files, nil
+	return
+}
+
+func ListFullTree(n *node.Node, peer peer.ID) (files []FileEntry, err error) {
+	var lsDirRecursive func(relativePath string) (fs []FileEntry, reErr error)
+
+	lsDirRecursive = func(relativePath string) (fs []FileEntry, reErr error) {
+		fs, reErr = List(n, peer, relativePath)
+		if reErr != nil {
+			return
+		}
+		logger.Infof("ls: %v", fs)
+		for idx, f := range fs {
+			if f.IsDir {
+				children, rereErr := lsDirRecursive(filepath.ToSlash(filepath.Join(f.DirectoryName, f.Filename)))
+				if rereErr != nil {
+					reErr = rereErr
+					return
+				}
+				fs[idx].Children = children
+			}
+		}
+
+		return
+	}
+	files, err = lsDirRecursive("/")
+
+	return
 }
 
 func Download(n *node.Node, peer peer.ID, fileName string) (filePath string, err error) {
@@ -204,15 +293,16 @@ func Download(n *node.Node, peer peer.ID, fileName string) (filePath string, err
 		return
 	}
 	data = strings.Trim(data, "\n")
-	if string(data) == constant.StellarEchoUnknownCommand {
+	if data == constant.StellarEchoUnknownCommand {
+		err = fmt.Errorf("file unknown command")
 		return
 	}
-	if string(data) != constant.StellarPong {
+	if data != constant.StellarPong {
 		err = fmt.Errorf("file get not receiving pong ack")
 		return
 	}
 
-	_, err = s.Write([]byte(fmt.Sprintf("%v\n", fileName)))
+	_, err = s.Write([]byte(fmt.Sprintf("%v\n", filepath.ToSlash(fileName))))
 	if err != nil {
 		return
 	}
@@ -241,6 +331,14 @@ func Download(n *node.Node, peer peer.ID, fileName string) (filePath string, err
 	}
 
 	filePath = filepath.Join(dataDir, fileName)
+	dir := filepath.Dir(filePath)
+	if _, err = os.Stat(dir); os.IsNotExist(err) {
+		err = os.Mkdir(dir, os.ModeDir)
+		if err != nil {
+			return
+		}
+	}
+
 	file, err := os.Create(filePath)
 	if err != nil {
 		return
