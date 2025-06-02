@@ -19,6 +19,8 @@ import (
 
 var logger = golog.Logger("stellar-conda")
 
+const CONDA_VERSION = "25.3.1-1"
+
 func CondaDownloadPath() (string, error) {
 	appDir, fileErr := constant.StellarPath()
 	if fileErr != nil {
@@ -317,8 +319,8 @@ func Download(folder, url string) (string, error) {
 	}
 }
 
-func DownloadUrl(pythonVersion string) (string, error) {
-	url := fmt.Sprintf("https://repo.anaconda.com/miniconda/Miniconda3-%v.3.1-1-", pythonVersion)
+func DownloadUrl(pythonVersion, condaVersion string) (string, error) {
+	url := fmt.Sprintf("https://repo.anaconda.com/miniconda/Miniconda3-%s_%s-", pythonVersion, condaVersion)
 
 	switch os := runtime.GOOS; os {
 	case "darwin":
@@ -360,7 +362,7 @@ func Install(version string) error {
 		return fileErr
 	}
 
-	condaDownloadUrl, err := DownloadUrl(version)
+	condaDownloadUrl, err := DownloadUrl(version, CONDA_VERSION)
 	if err != nil {
 		return err
 	}

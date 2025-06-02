@@ -29,7 +29,7 @@ func testCommand() {
 func test() {
 	condaPath, err := conda.CommandPath()
 	if err != nil {
-		err := conda.Install("py313_25")
+		err := conda.Install("py313")
 		if err != nil {
 			panic(err)
 		} else {
