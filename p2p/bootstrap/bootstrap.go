@@ -13,9 +13,7 @@ import (
 
 var logger = golog.Logger("stellar-p2p-bootstrap")
 
-var BOOTSTRAPPERS = []string{
-	"/ip4/114.32.226.175/tcp/43210/p2p/12D3KooWNdcyVpbz8J5tZr8Qz7ZZSrf7FBPzNnWs3jLgTe3zgwyc",
-}
+var BOOTSTRAPPERS = []string{}
 
 var Bootstrappers []peer.AddrInfo
 

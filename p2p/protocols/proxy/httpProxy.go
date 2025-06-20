@@ -61,7 +61,7 @@ func streamHandler(stream network.Stream) {
 	// Read the HTTP request from the buffer
 	req, err := http.ReadRequest(buf)
 	if err != nil {
-		stream.Reset()
+		stream.ResetWithError(406)
 		logger.Error(err)
 		return
 	}
@@ -85,7 +85,7 @@ func streamHandler(stream network.Stream) {
 	logger.Infof("Making request to %s", req.URL)
 	resp, err := http.DefaultTransport.RoundTrip(outreq)
 	if err != nil {
-		stream.Reset()
+		stream.ResetWithError(404)
 		logger.Error(err)
 		return
 	}
@@ -139,7 +139,7 @@ func (p *ProxyService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// r.Write() writes the HTTP request to the stream.
 	err = r.Write(stream)
 	if err != nil {
-		stream.Reset()
+		stream.ResetWithError(500)
 		logger.Error(err)
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return
@@ -150,7 +150,7 @@ func (p *ProxyService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	buf := bufio.NewReader(stream)
 	resp, err := http.ReadResponse(buf, r)
 	if err != nil {
-		stream.Reset()
+		stream.ResetWithError(500)
 		logger.Error(err)
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return

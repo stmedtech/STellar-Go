@@ -10,6 +10,7 @@ import (
 	"stellar/p2p/bootstrap"
 	"stellar/p2p/constant"
 	"stellar/p2p/identity"
+	"stellar/p2p/policy"
 	"stellar/p2p/util"
 	"sync"
 	"time"
@@ -52,6 +53,7 @@ type Node struct {
 	Bootstrapper   bool
 	RelayNode      bool
 	ReferenceToken string
+	Policy         *policy.ProtocolPolicy
 
 	Host    host.Host
 	DHT     *dht.IpfsDHT
@@ -79,12 +81,6 @@ func NewBootstrapper(
 	debug bool,
 	opts ...libp2p.Option,
 ) (n *Node, err error) {
-	http.Handle("/metrics", promhttp.Handler())
-	go func() {
-		http.Handle("/debug/metrics/prometheus", promhttp.Handler())
-		log.Fatal(http.ListenAndServe(":5001", nil))
-	}()
-
 	lopts := []libp2p.Option{
 		libp2p.Security(libp2ptls.ID, libp2ptls.New),
 		libp2p.Security(noise.ID, noise.New),
@@ -216,6 +212,10 @@ func NewNode(
 	n = &Node{
 		Bootstrapper: false,
 		RelayNode:    false,
+		Policy: &policy.ProtocolPolicy{
+			Enable:    true,
+			WhiteList: make([]string, 0),
+		},
 
 		CTX:    ctx,
 		Cancel: cancel,
@@ -234,6 +234,14 @@ func NewNode(
 	}
 
 	return
+}
+
+func (n *Node) StartMetricsServer(port uint64) {
+	http.Handle("/metrics", promhttp.Handler())
+	go func() {
+		http.Handle("/debug/metrics/prometheus", promhttp.Handler())
+		log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", port), nil))
+	}()
 }
 
 func (n *Node) ID() peer.ID {
@@ -299,6 +307,8 @@ func (n *Node) InitDHT(bootstrapper bool) (anyConnected bool, err error) {
 				logger.Warnf("Error while connecting to bootstrap node: %q: %v", bootstrap.ID, err)
 				return
 			}
+
+			n.Policy.AddWhiteList(bootstrap.ID.String())
 
 			anyConnected = true
 			logger.Infof("Connection established with bootstrap node: %q", bootstrap.ID)
@@ -450,6 +460,7 @@ func (n *Node) UpdateDevices() {
 				device.ReferenceToken = d.ReferenceToken
 				device.Status = DeviceStatusHealthy
 				device.SysInfo = d.SysInfo
+				device.Timestamp = time.Now().UTC()
 				n.Devices[deviceId] = device
 				n.DLock.Unlock()
 			case DeviceStatusHealthy:

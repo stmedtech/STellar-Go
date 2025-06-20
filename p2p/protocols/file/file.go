@@ -20,26 +20,28 @@ import (
 )
 
 var logger = golog.Logger("stellar-p2p-protocols-file")
-var dataDir string
+var DataDir string
 
 func init() {
 	pwd, err := os.Getwd()
 	if err != nil {
 		return
 	}
-	dataDir = filepath.Join(pwd, "data")
+	DataDir = filepath.Join(pwd, "data")
+}
+
+func fileStreamHandler(s network.Stream) {
+	if err := doStellarFile(s); err != nil {
+		// TODO improve error handling
+		logger.Warnf("file error: %v", err)
+		s.ResetWithError(406)
+	} else {
+		s.Close()
+	}
 }
 
 func BindFileStream(n *node.Node) {
-	n.Host.SetStreamHandler(constant.StellarFileProtocol, func(s network.Stream) {
-		// TODO security
-		if err := doStellarFile(n, s); err != nil {
-			logger.Warnf("file error: %v", err)
-			s.Reset()
-		} else {
-			s.Close()
-		}
-	})
+	n.Host.SetStreamHandler(constant.StellarFileProtocol, n.Policy.AuthorizeStream(fileStreamHandler))
 	logger.Info("File protocol is ready")
 }
 
@@ -49,6 +51,10 @@ type FileEntry struct {
 	Size          int64
 	IsDir         bool
 	Children      []FileEntry
+}
+
+func (e *FileEntry) FullName() string {
+	return filepath.ToSlash(filepath.Join(e.DirectoryName, e.Filename))
 }
 
 type FileInfo struct {
@@ -67,7 +73,7 @@ func FileChecksum(filePath string) (string, error) {
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
-func doStellarFile(n *node.Node, s network.Stream) error {
+func doStellarFile(s network.Stream) error {
 	buf := bufio.NewReader(s)
 
 	str, err := buf.ReadString('\n')
@@ -91,7 +97,7 @@ func doStellarFile(n *node.Node, s network.Stream) error {
 		relativePath = strings.Trim(relativePath, "\n")
 		relativePath = strings.Trim(relativePath, "/")
 		relativePath = filepath.ToSlash(relativePath)
-		dirPath := filepath.Join(dataDir, relativePath)
+		dirPath := filepath.Join(DataDir, relativePath)
 
 		entries, err := os.ReadDir(dirPath)
 		if err != nil {
@@ -138,53 +144,33 @@ func doStellarFile(n *node.Node, s network.Stream) error {
 		}
 		fileName = strings.Trim(fileName, "\n")
 		fileName = filepath.ToSlash(fileName)
-		fileName = filepath.Join(dataDir, fileName)
+		fileName = filepath.Join(DataDir, fileName)
 
-		fi, err := os.Stat(fileName)
+		err = upload(s, fileName)
+		if err != nil {
+			return err
+		}
+		return nil
+	case constant.StellarFileSend:
+		_, err = s.Write([]byte(fmt.Sprintf("%v\n", constant.StellarPong)))
 		if err != nil {
 			return err
 		}
 
-		checksum, checksumErr := FileChecksum(fileName)
-		if checksumErr != nil {
-			return checksumErr
+		fileName, err := buf.ReadString('\n')
+		if err != nil {
+			return err
 		}
+		fileName = strings.Trim(fileName, "\n")
+		fileName = filepath.ToSlash(fileName)
+		fileName = filepath.Join(DataDir, fileName)
 
-		finfo := FileInfo{
-			Filename: fileName,
-			Size:     fi.Size(),
-			Checksum: checksum,
-		}
-		jsonData, jsonErr := json.Marshal(finfo)
-		if jsonErr != nil {
-			return jsonErr
-		}
-
-		_, err = s.Write([]byte(fmt.Sprintf("%v\n", string(jsonData))))
+		filePath, err := download(s, fileName)
 		if err != nil {
 			return err
 		}
 
-		data, err := buf.ReadString('\n')
-		if err != nil {
-			return err
-		}
-		data = strings.Trim(data, "\n")
-		if string(data) != constant.StellarPong {
-			return fmt.Errorf("file get not receiving pong ack")
-		}
-
-		file, err := os.Open(fileName)
-		if err != nil {
-			return err
-		}
-		defer file.Close()
-
-		logger.Debugf("start copying file %v", fileName)
-		_, err = io.Copy(s, file)
-		if err != nil {
-			return err
-		}
+		logger.Infof("received file %v", filePath)
 		return nil
 	default:
 		response = constant.StellarFileUnknownCommand
@@ -273,18 +259,32 @@ func ListFullTree(n *node.Node, peer peer.ID) (files []FileEntry, err error) {
 	return
 }
 
-func Download(n *node.Node, peer peer.ID, fileName string) (filePath string, err error) {
-	filePath = ""
-	err = nil
+func upload(s io.ReadWriteCloser, filePath string) (err error) {
+	buf := bufio.NewReader(s)
 
-	s, err := n.Host.NewStream(n.CTX, peer, constant.StellarFileProtocol)
+	fi, err := os.Stat(filePath)
 	if err != nil {
 		return
 	}
-	defer s.Close()
 
-	buf := bufio.NewReader(s)
-	_, err = s.Write([]byte(fmt.Sprintf("%v\n", constant.StellarFileGet)))
+	checksum, checksumErr := FileChecksum(filePath)
+	if checksumErr != nil {
+		err = checksumErr
+		return
+	}
+
+	finfo := FileInfo{
+		Filename: filePath,
+		Size:     fi.Size(),
+		Checksum: checksum,
+	}
+	jsonData, jsonErr := json.Marshal(finfo)
+	if jsonErr != nil {
+		err = jsonErr
+		return
+	}
+
+	_, err = s.Write([]byte(fmt.Sprintf("%v\n", string(jsonData))))
 	if err != nil {
 		return
 	}
@@ -294,21 +294,33 @@ func Download(n *node.Node, peer peer.ID, fileName string) (filePath string, err
 		return
 	}
 	data = strings.Trim(data, "\n")
-	if data == constant.StellarEchoUnknownCommand {
-		err = fmt.Errorf("file unknown command")
-		return
-	}
-	if data != constant.StellarPong {
+	if string(data) != constant.StellarPong {
 		err = fmt.Errorf("file get not receiving pong ack")
 		return
 	}
 
-	_, err = s.Write([]byte(fmt.Sprintf("%v\n", filepath.ToSlash(fileName))))
+	file, err := os.Open(filePath)
 	if err != nil {
 		return
 	}
+	defer file.Close()
 
-	data, err = buf.ReadString('\n')
+	logger.Debugf("start copying file %v", filePath)
+	bar := progressbar.DefaultBytes(
+		finfo.Size,
+		"uploading",
+	)
+	_, err = io.Copy(io.MultiWriter(s, bar), file)
+	if err != nil {
+		return
+	}
+	return nil
+}
+
+func download(s io.ReadWriteCloser, fileName string) (filePath string, err error) {
+	buf := bufio.NewReader(s)
+
+	data, err := buf.ReadString('\n')
 	if err != nil {
 		return
 	}
@@ -331,7 +343,7 @@ func Download(n *node.Node, peer peer.ID, fileName string) (filePath string, err
 		return
 	}
 
-	filePath = filepath.Join(dataDir, fileName)
+	filePath = fileName
 	dir := filepath.Dir(filePath)
 	if _, err = os.Stat(dir); os.IsNotExist(err) {
 		err = os.Mkdir(dir, os.ModeDir)
@@ -366,5 +378,79 @@ func Download(n *node.Node, peer peer.ID, fileName string) (filePath string, err
 		return
 	}
 
+	return
+}
+
+func Upload(n *node.Node, peer peer.ID, filePath string, saveFilePath string) (err error) {
+	s, err := n.Host.NewStream(n.CTX, peer, constant.StellarFileProtocol)
+	if err != nil {
+		return
+	}
+	defer s.Close()
+
+	buf := bufio.NewReader(s)
+
+	_, err = s.Write([]byte(fmt.Sprintf("%v\n", constant.StellarFileSend)))
+	if err != nil {
+		return
+	}
+
+	data, err := buf.ReadString('\n')
+	if err != nil {
+		return
+	}
+	data = strings.Trim(data, "\n")
+	if data == constant.StellarEchoUnknownCommand {
+		err = fmt.Errorf("file unknown command")
+		return
+	}
+	if data != constant.StellarPong {
+		err = fmt.Errorf("file get not receiving pong ack")
+		return
+	}
+
+	_, err = s.Write([]byte(fmt.Sprintf("%v\n", filepath.ToSlash(saveFilePath))))
+	if err != nil {
+		return
+	}
+
+	err = upload(s, filePath)
+	return
+}
+
+func Download(n *node.Node, peer peer.ID, fileName string, destDir string) (filePath string, err error) {
+	s, err := n.Host.NewStream(n.CTX, peer, constant.StellarFileProtocol)
+	if err != nil {
+		return
+	}
+	defer s.Close()
+
+	buf := bufio.NewReader(s)
+
+	_, err = s.Write([]byte(fmt.Sprintf("%v\n", constant.StellarFileGet)))
+	if err != nil {
+		return
+	}
+
+	data, err := buf.ReadString('\n')
+	if err != nil {
+		return
+	}
+	data = strings.Trim(data, "\n")
+	if data == constant.StellarEchoUnknownCommand {
+		err = fmt.Errorf("file unknown command")
+		return
+	}
+	if data != constant.StellarPong {
+		err = fmt.Errorf("file get not receiving pong ack")
+		return
+	}
+
+	_, err = s.Write([]byte(fmt.Sprintf("%v\n", filepath.ToSlash(fileName))))
+	if err != nil {
+		return
+	}
+
+	filePath, err = download(s, filepath.Join(destDir, fileName))
 	return
 }

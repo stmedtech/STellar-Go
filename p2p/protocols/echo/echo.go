@@ -17,8 +17,9 @@ var logger = golog.Logger("stellar-p2p-protocols-echo")
 func BindEchoStream(n *node.Node) {
 	n.Host.SetStreamHandler(constant.StellarEchoProtocol, func(s network.Stream) {
 		if err := doStellarEcho(n, s); err != nil {
+			// TODO improve error handling
 			logger.Warnf("echo error: %v", err)
-			s.Reset()
+			s.ResetWithError(406)
 		} else {
 			s.Close()
 		}

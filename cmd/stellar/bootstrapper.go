@@ -25,7 +25,7 @@ func bootstrapperCommand() {
 
 	bootstrapperCmd.Parse(os.Args[2:])
 
-	_, nodeErr := node.NewBootstrapper(
+	n, nodeErr := node.NewBootstrapper(
 		*listenHost,
 		uint64(*listenPort),
 		*b64privkey,
@@ -35,6 +35,8 @@ func bootstrapperCommand() {
 	if nodeErr != nil {
 		logger.Fatalln(nodeErr)
 	}
+
+	n.StartMetricsServer(5001)
 
 	<-make(chan struct{}) // hang forever
 }

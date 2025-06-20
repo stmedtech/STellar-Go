@@ -23,4 +23,5 @@ const (
 	StellarFileUnknownCommand string = "unkown"
 	StellarFileList           string = "ls"
 	StellarFileGet            string = "get"
+	StellarFileSend           string = "send"
 )

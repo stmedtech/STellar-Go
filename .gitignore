@@ -28,10 +28,12 @@ go.work.sum
 .env
 
 # Editor/IDE
-# .idea/
-# .vscode/
+.idea/
+.vscode/
 
 docker-compose.override.yml
 
 cache/
 data/
+
+docker/

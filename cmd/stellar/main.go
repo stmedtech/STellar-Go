@@ -13,12 +13,8 @@ const help = `Stellar cli`
 func main() {
 	var logger = golog.Logger("stellar")
 
-	golog.SetLogLevel("stellar", "info")
-	golog.SetLogLevel("stellar-p2p-node", "debug")
-	golog.SetLogLevel("stellar-p2p-bootstrap", "info")
-	golog.SetLogLevel("stellar-p2p-protocols-proxy", "info")
-	golog.SetLogLevel("stellar-p2p-protocols-echo", "info")
-	golog.SetLogLevel("stellar-p2p-protocols-file", "info")
+	golog.SetLogLevelRegex("stellar.*", "info")
+
 	// golog.SetAllLoggers(golog.LevelInfo)
 
 	flag.Usage = func() {
@@ -27,7 +23,7 @@ func main() {
 	}
 
 	if len(os.Args) < 2 {
-		fmt.Println("expected 'key', 'bootstrapper' or 'node' subcommands")
+		fmt.Println("expected 'key', 'bootstrapper', 'node', 'gui' subcommands")
 		os.Exit(1)
 	}
 
@@ -38,6 +34,8 @@ func main() {
 		bootstrapperCommand()
 	case "node":
 		nodeCommand()
+	case "gui":
+		guiCommand()
 	case "test":
 		testCommand()
 	default:
