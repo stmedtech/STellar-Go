@@ -34,6 +34,17 @@ func (f *CondaPythonPreparation) Prepare() (envPath string, err error) {
 	envYamlPath = filepath.Join(file.DataDir, envYamlPath)
 	defer os.Remove(envYamlPath)
 
+	if conda.CondaPath == "" {
+		err = conda.Install("py313")
+		if err != nil {
+			return
+		}
+		if !conda.UpdateCondaPath() {
+			err = fmt.Errorf("conda install failed")
+			return
+		}
+	}
+
 	var tempDir string
 	tempDir, err = createTempDir()
 	if err != nil {

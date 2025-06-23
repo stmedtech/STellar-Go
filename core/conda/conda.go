@@ -394,7 +394,7 @@ func Install(version string) error {
 	switch os := runtime.GOOS; os {
 	case "darwin":
 	case "linux":
-		cmd := exec.Command("/bin/sh", filePath, "-b", "-p", filepath.Join(appDir, "conda"))
+		cmd := exec.Command("/bin/sh", filePath, "-b", "-f", "-p", filepath.Join(appDir, "conda"))
 		stdout, cmdErr := runCommand(cmd)
 		if cmdErr != nil {
 			return fmt.Errorf("installation failed due to %v", cmdErr)
