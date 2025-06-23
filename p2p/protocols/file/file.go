@@ -165,12 +165,10 @@ func doStellarFile(s network.Stream) error {
 		fileName = filepath.ToSlash(fileName)
 		fileName = filepath.Join(DataDir, fileName)
 
-		filePath, err := download(s, fileName)
+		_, err = download(s, fileName)
 		if err != nil {
 			return err
 		}
-
-		logger.Infof("received file %v", filePath)
 		return nil
 	default:
 		response = constant.StellarFileUnknownCommand
@@ -295,7 +293,7 @@ func upload(s io.ReadWriteCloser, filePath string) (err error) {
 	}
 	data = strings.Trim(data, "\n")
 	if string(data) != constant.StellarPong {
-		err = fmt.Errorf("file get not receiving pong ack")
+		err = fmt.Errorf("file send not receiving pong ack")
 		return
 	}
 
@@ -310,10 +308,21 @@ func upload(s io.ReadWriteCloser, filePath string) (err error) {
 		finfo.Size,
 		"uploading",
 	)
-	_, err = io.Copy(io.MultiWriter(s, bar), file)
+	_, err = io.CopyN(io.MultiWriter(s, bar), file, finfo.Size)
 	if err != nil {
 		return
 	}
+
+	data, err = buf.ReadString('\n')
+	if err != nil {
+		return
+	}
+	data = strings.Trim(data, "\n")
+	if data != constant.StellarPong {
+		err = fmt.Errorf("file send not receiving pong ack")
+		return
+	}
+
 	return nil
 }
 
@@ -338,15 +347,10 @@ func download(s io.ReadWriteCloser, fileName string) (filePath string, err error
 		return
 	}
 
-	_, err = s.Write([]byte(fmt.Sprintf("%v\n", constant.StellarPong)))
-	if err != nil {
-		return
-	}
-
 	filePath = fileName
 	dir := filepath.Dir(filePath)
 	if _, err = os.Stat(dir); os.IsNotExist(err) {
-		err = os.Mkdir(dir, os.ModeDir)
+		err = os.MkdirAll(dir, os.ModePerm)
 		if err != nil {
 			return
 		}
@@ -363,7 +367,7 @@ func download(s io.ReadWriteCloser, fileName string) (filePath string, err error
 		finfo.Size,
 		"downloading",
 	)
-	_, err = io.Copy(io.MultiWriter(file, bar), s)
+	_, err = io.CopyN(io.MultiWriter(file, bar), s, finfo.Size)
 	if err != nil {
 		return
 	}
@@ -375,6 +379,12 @@ func download(s io.ReadWriteCloser, fileName string) (filePath string, err error
 	}
 	if checksum != finfo.Checksum {
 		err = fmt.Errorf("downloaded file checksum %v mismatch with original %v", checksum, finfo.Checksum)
+		return
+	}
+	logger.Infof("received file %s with checksum %s", filePath, checksum)
+
+	_, err = s.Write([]byte(fmt.Sprintf("%v\n", constant.StellarPong)))
+	if err != nil {
 		return
 	}
 
@@ -405,7 +415,7 @@ func Upload(n *node.Node, peer peer.ID, filePath string, saveFilePath string) (e
 		return
 	}
 	if data != constant.StellarPong {
-		err = fmt.Errorf("file get not receiving pong ack")
+		err = fmt.Errorf("file send not receiving pong ack")
 		return
 	}
 

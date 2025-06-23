@@ -8,6 +8,7 @@ import (
 	"slices"
 	"stellar/core/constant"
 	"stellar/core/device"
+	"stellar/core/protocols/compute"
 	"stellar/p2p/node"
 	"stellar/p2p/protocols/file"
 	"stellar/p2p/protocols/proxy"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	golog "github.com/ipfs/go-log/v2"
+	"github.com/libp2p/go-libp2p/core/peer"
 	ma "github.com/multiformats/go-multiaddr"
 
 	"fyne.io/fyne/v2"
@@ -23,19 +25,23 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/data/binding"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/storage"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 )
 
 var logger = golog.Logger("stellar-core-gui")
 
 type GUIApp struct {
+	Bypass bool
+
 	node  *node.Node
 	proxy *proxy.ProxyManager
 
 	a fyne.App
 	w fyne.Window
 
-	overview binding.String
+	overviewContainer *fyne.Container
 
 	devices          binding.ExternalStringList
 	selectedDeviceId binding.String
@@ -55,7 +61,7 @@ func NewGUIApp() (*GUIApp, error) {
 	app := GUIApp{
 		a: a,
 
-		overview: binding.NewString(),
+		overviewContainer: container.NewVBox(),
 
 		devices: binding.BindStringList(
 			&[]string{},
@@ -73,12 +79,12 @@ func NewGUIApp() (*GUIApp, error) {
 
 func (app *GUIApp) showErrWithWindow(err error, window fyne.Window) {
 	logger.Warn(err)
-	dialog.NewError(err, window).Show()
+	dialog.ShowError(err, window)
 }
 
 func (app *GUIApp) showErr(err error) {
 	logger.Warn(err)
-	dialog.NewError(err, app.w).Show()
+	dialog.ShowError(err, app.w)
 }
 
 func (app *GUIApp) deviceSelect() *widget.RadioGroup {
@@ -87,9 +93,7 @@ func (app *GUIApp) deviceSelect() *widget.RadioGroup {
 }
 
 func (app *GUIApp) initOverview() fyne.CanvasObject {
-	content := widget.NewLabelWithData(app.overview)
-
-	return container.NewBorder(nil, nil, nil, nil, content)
+	return container.NewBorder(nil, nil, nil, nil, app.overviewContainer)
 }
 
 func prettyByteSize(b int) string {
@@ -107,6 +111,37 @@ func (app *GUIApp) initDevices() fyne.CanvasObject {
 	str := binding.NewString()
 	str.Set("Please select a device")
 
+	connectDevice := widget.NewButton("Connect Device", func() {
+		w := app.a.NewWindow("Connect to new Device")
+		w.Resize(fyne.NewSize(800, 600))
+
+		deviceAddress := widget.NewEntry()
+
+		form := &widget.Form{
+			Items: []*widget.FormItem{
+				{Text: "Address", Widget: deviceAddress},
+			},
+			OnSubmit: func() {
+				peer, addrErr := peer.AddrInfoFromString(deviceAddress.Text)
+				if addrErr != nil {
+					app.showErrWithWindow(addrErr, w)
+					return
+				}
+
+				device, connectErr := app.node.ConnectDevice(*peer)
+				if connectErr != nil {
+					app.showErrWithWindow(connectErr, w)
+					return
+				}
+
+				dialog.ShowInformation("Connected to Device", device.ID.String(), w)
+			},
+		}
+
+		w.SetContent(form)
+		w.Show()
+	})
+
 	list := widget.NewListWithData(app.devices,
 		func() fyne.CanvasObject {
 			return widget.NewLabel("template")
@@ -114,6 +149,16 @@ func (app *GUIApp) initDevices() fyne.CanvasObject {
 		func(i binding.DataItem, o fyne.CanvasObject) {
 			o.(*widget.Label).Bind(i.(binding.String))
 		})
+
+	list.OnSelected = func(id widget.ListItemID) {
+		deviceId, err := app.devices.GetValue(id)
+		if err != nil {
+			return
+		}
+		app.selectedDeviceId.Set(deviceId)
+	}
+
+	content := container.NewBorder(connectDevice, nil, nil, nil, list)
 
 	app.selectedDeviceId.AddListener(binding.NewDataListener(func() {
 		deviceId, err := app.selectedDeviceId.Get()
@@ -157,6 +202,9 @@ func (app *GUIApp) initDevices() fyne.CanvasObject {
 			app.showErr(err)
 			return
 		}
+
+		w := app.a.NewWindow(fmt.Sprintf("Files Tree View of device %v", deviceId))
+		w.Resize(fyne.NewSize(800, 600))
 
 		files, lsErr := file.ListFullTree(app.node, device.ID)
 		if lsErr != nil {
@@ -266,11 +314,15 @@ func (app *GUIApp) initDevices() fyne.CanvasObject {
 				return
 			}
 
-			file.Download(app.node, device.ID, f.FullName(), file.DataDir)
+			filePath, err := file.Download(app.node, device.ID, f.FullName(), file.DataDir)
+			if err != nil {
+				app.showErrWithWindow(err, w)
+				return
+			}
+
+			dialog.ShowInformation("Downloaded", filePath, w)
 		}
 
-		w := app.a.NewWindow(fmt.Sprintf("Files Tree View of device %v", deviceId))
-		w.Resize(fyne.NewSize(800, 600))
 		w.SetContent(tree)
 		w.Show()
 	})
@@ -292,33 +344,156 @@ func (app *GUIApp) initDevices() fyne.CanvasObject {
 
 		fd := dialog.NewFileOpen(func(reader fyne.URIReadCloser, err error) {
 			if err != nil {
-				dialog.ShowError(err, app.w)
+				app.showErr(err)
 				return
 			}
 			if reader == nil {
-				logger.Warn("file selection cancelled")
 				return
 			}
 
 			fpath := reader.URI().Path()
 			logger.Infof("uploading file %s to device %s...", fpath, deviceId)
-			file.Upload(app.node, device.ID, fpath, filepath.Base(fpath))
+
+			err = file.Upload(app.node, device.ID, fpath, filepath.Base(fpath))
+			if err != nil {
+				app.showErr(err)
+				return
+			}
+
+			dialog.ShowInformation("Sent", fpath, app.w)
 		}, app.w)
 		fd.Show()
 	})
 
-	deviceControls := container.NewHBox(filesTree, sendFile)
-
-	split := container.NewHSplit(list, container.NewVBox(contentText, deviceControls))
-	split.Offset = 0.2
-
-	list.OnSelected = func(id widget.ListItemID) {
-		deviceId, err := app.devices.GetValue(id)
+	prepareCondaPython := widget.NewButton("Prepare Python Env", func() {
+		deviceId, err := app.selectedDeviceId.Get()
 		if err != nil {
 			return
 		}
-		app.selectedDeviceId.Set(deviceId)
-	}
+		if deviceId == "" {
+			return
+		}
+
+		device, err := app.node.GetDevice(deviceId)
+		if err != nil {
+			app.showErr(err)
+			return
+		}
+
+		w := app.a.NewWindow(fmt.Sprintf("Prepare Python Environment for device %v", deviceId))
+		w.Resize(fyne.NewSize(800, 600))
+
+		envName := widget.NewEntry()
+		envVersion := widget.NewEntry()
+		envVersion.Text = "3.11"
+
+		form := &widget.Form{
+			Items: []*widget.FormItem{
+				{Text: "Environment Name", Widget: envName},
+				{Text: "Environment Version", Widget: envVersion},
+			},
+			OnSubmit: func() {
+				fd := dialog.NewFileOpen(func(reader fyne.URIReadCloser, err error) {
+					if err != nil {
+						app.showErrWithWindow(err, w)
+						return
+					}
+					if reader == nil {
+						return
+					}
+
+					fpath := reader.URI().Path()
+					form := compute.CondaPythonPreparation{
+						Env:         envName.Text,
+						Version:     envVersion.Text,
+						EnvYamlPath: fpath,
+					}
+					envPath, envErr := compute.PrepareCondaPython(app.node, device.ID, form)
+					if envErr != nil {
+						app.showErrWithWindow(envErr, w)
+						return
+					}
+
+					dialog.ShowInformation("Python Environment", envPath, w)
+				}, w)
+				fd.SetFilter(storage.NewExtensionFileFilter([]string{".yml", ".yaml"}))
+				fd.Show()
+			},
+		}
+
+		w.SetContent(form)
+		w.Show()
+	})
+
+	executeCondaPythonScript := widget.NewButton("Execute Python Script", func() {
+		deviceId, err := app.selectedDeviceId.Get()
+		if err != nil {
+			return
+		}
+		if deviceId == "" {
+			return
+		}
+
+		device, err := app.node.GetDevice(deviceId)
+		if err != nil {
+			app.showErr(err)
+			return
+		}
+
+		w := app.a.NewWindow(fmt.Sprintf("Execute Python Script with device %v", deviceId))
+		w.Resize(fyne.NewSize(800, 600))
+
+		envs, err := compute.ListCondaPythonEnvs(app.node, device.ID)
+		if err != nil {
+			app.showErr(err)
+			return
+		}
+		options := slices.Sorted(maps.Keys(envs))
+		envName := widget.NewRadioGroup(options, func(value string) {})
+		if len(options) > 0 {
+			envName.Selected = options[0]
+		}
+
+		form := &widget.Form{
+			Items: []*widget.FormItem{
+				{Text: "Select Environment", Widget: envName},
+			},
+			OnSubmit: func() {
+				fd := dialog.NewFileOpen(func(reader fyne.URIReadCloser, err error) {
+					if err != nil {
+						app.showErrWithWindow(err, w)
+						return
+					}
+					if reader == nil {
+						return
+					}
+
+					fpath := reader.URI().Path()
+					form := compute.CondaPythonScriptExecution{
+						Env:        envName.Selected,
+						ScriptPath: fpath,
+					}
+					result, envErr := compute.ExecuteCondaPythonScript(app.node, device.ID, form)
+					if envErr != nil {
+						app.showErrWithWindow(envErr, w)
+						return
+					}
+
+					dialog.ShowInformation("Python Script Execution", result, w)
+				}, w)
+				fd.SetFilter(storage.NewExtensionFileFilter([]string{".py"}))
+				fd.Show()
+			},
+		}
+
+		w.SetContent(form)
+		w.Show()
+	})
+
+	deviceControls := container.NewHBox(filesTree, sendFile, prepareCondaPython, executeCondaPythonScript)
+
+	split := container.NewHSplit(content, container.NewVBox(contentText, deviceControls))
+	split.Offset = 0.2
 
 	return split
 }
@@ -475,7 +650,7 @@ func (app *GUIApp) initWhiteList() fyne.CanvasObject {
 	return container.NewBorder(top, nil, nil, nil, list)
 }
 
-func (app *GUIApp) Setup(bypass bool) {
+func (app *GUIApp) Setup() {
 	icon, _ := fyne.LoadResourceFromPath("assets/stellar.png")
 	app.a.SetIcon(icon)
 
@@ -550,7 +725,7 @@ func (app *GUIApp) Setup(bypass bool) {
 	}
 	form.SubmitText = "Start Node"
 
-	if bypass {
+	if app.Bypass {
 		form.OnSubmit()
 	} else {
 		app.w = w
@@ -587,11 +762,23 @@ func (app *GUIApp) Loop() {
 			lines = append(lines, fmt.Sprintf("ID:\t\t\t\t%v", n.ID().String()))
 			lines = append(lines, fmt.Sprintf("Reference Token:\t%v", n.ReferenceToken))
 			lines = append(lines, "Broadcasted Addresses:")
-			for _, addr := range n.Host.Addrs() {
-				lines = append(lines, "\t"+addr.Encapsulate(ma.StringCast("/p2p/"+n.ID().String())).String())
-			}
 
-			app.overview.Set(strings.Join(lines, "\n"))
+			app.overviewContainer.RemoveAll()
+			app.overviewContainer.Add(widget.NewLabel(strings.Join(lines, "\n")))
+			for _, addr := range n.Host.Addrs() {
+				ent := widget.NewEntry()
+				ent.Text = addr.Encapsulate(ma.StringCast("/p2p/" + n.ID().String())).String()
+				ent.Disable()
+
+				copy := widget.NewButtonWithIcon("", theme.ContentCopyIcon(), func() {
+					app.a.Clipboard().SetContent(ent.Text)
+				})
+
+				cont := container.NewBorder(nil, nil, copy, nil, ent)
+
+				app.overviewContainer.Add(cont)
+			}
+			app.overviewContainer.Refresh()
 
 			app.devices.Set(slices.Sorted(maps.Keys(app.node.Devices)))
 
@@ -612,8 +799,8 @@ func (app *GUIApp) Cleanup() {
 	}
 }
 
-func (app *GUIApp) Run(bypass bool) {
-	app.Setup(bypass)
+func (app *GUIApp) Run() {
+	app.Setup()
 
 	go func() {
 		ticker := time.NewTicker(time.Second)

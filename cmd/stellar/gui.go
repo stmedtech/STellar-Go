@@ -19,6 +19,7 @@ func guiCommand() {
 	if err != nil {
 		logger.Fatalln(err)
 	}
+	app.Bypass = *bypass
 
-	app.Run(*bypass)
+	app.Run()
 }

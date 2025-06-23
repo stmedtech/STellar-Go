@@ -321,6 +321,143 @@ func (n *Node) InitDHT(bootstrapper bool) (anyConnected bool, err error) {
 	return anyConnected, nil
 }
 
+func (n *Node) discoverDevice(peer peer.AddrInfo) (device *Device, err error) {
+	id := peer.ID.String()
+
+	if peer.ID == n.ID() {
+		sysInfo, sysInfoErr := util.GetSystemInformation()
+		if sysInfoErr != nil {
+			logger.Fatalln(sysInfoErr)
+			return
+		}
+		n.DLock.Lock()
+		device = &Device{
+			ID:      peer.ID,
+			Status:  "healthy",
+			SysInfo: sysInfo,
+		}
+		n.Devices[id] = *device
+		n.DLock.Unlock()
+		return
+	}
+
+	if pingPongErr := n.Ping(peer.ID); pingPongErr != nil {
+		n.Host.Network().ClosePeer(peer.ID)
+		n.Host.Peerstore().RemovePeer(peer.ID)
+		n.Host.Peerstore().ClearAddrs(peer.ID)
+		n.DHT.RoutingTable().RemovePeer(peer.ID)
+		n.DHT.RefreshRoutingTable()
+		err = pingPongErr
+		return
+	}
+
+	logger.Debugf("Found peer: %v", peer)
+
+	n.DLock.Lock()
+	device = &Device{
+		ID:     peer.ID,
+		Status: DeviceStatusDiscovered,
+	}
+	n.Devices[id] = *device
+	n.DLock.Unlock()
+
+	connectErr := n.Host.Connect(n.CTX, peer)
+	if connectErr != nil {
+		err = connectErr
+		return
+	}
+
+	return
+}
+
+func (n *Node) healthCheckDevice(device *Device) (err error) {
+	deviceId := device.ID.String()
+
+	disconnect := func() {
+		logger.Debugf("disconnecting device %v", device.ID)
+		n.DLock.Lock()
+		delete(n.Devices, deviceId)
+		n.DLock.Unlock()
+		if n.Bootstrapper {
+			n.Host.Peerstore().RemovePeer(device.ID)
+		}
+	}
+
+	switch device.Status {
+	case DeviceStatusDiscovered:
+		deviceInfoStr, deviceInfoErr := n.GetEcho(device.ID, constant.StellarEchoDeviceInfo)
+		if deviceInfoErr != nil {
+			err = deviceInfoErr
+			defer disconnect()
+			return
+		}
+
+		var d Device
+		decodeErr := json.Unmarshal([]byte(deviceInfoStr), &d)
+		if decodeErr != nil {
+			err = decodeErr
+			defer disconnect()
+			return
+		}
+		if d.ID != device.ID {
+			err = fmt.Errorf("fatal device handshake, device id not matched: %v, %v", device.ID, d.ID)
+			logger.Error(err)
+			defer disconnect()
+			return
+		}
+
+		n.DLock.Lock()
+		device.ReferenceToken = d.ReferenceToken
+		device.Status = DeviceStatusHealthy
+		device.SysInfo = d.SysInfo
+		device.Timestamp = time.Now().UTC()
+		n.Devices[deviceId] = *device
+		n.DLock.Unlock()
+	case DeviceStatusHealthy:
+		if pingPongErr := n.Ping(device.ID); pingPongErr != nil {
+			err = pingPongErr
+			defer disconnect()
+			return
+		}
+
+		n.DLock.Lock()
+		device.Timestamp = time.Now().UTC()
+		n.Devices[deviceId] = *device
+		n.DLock.Unlock()
+	}
+
+	return
+}
+
+func (n *Node) ConnectDevice(peer peer.AddrInfo) (device *Device, err error) {
+	id := peer.ID.String()
+
+	// Skip existing
+	if _, deviceErr := n.GetDevice(id); deviceErr == nil {
+		err = fmt.Errorf("device %s already connected", id)
+		return
+	}
+
+	if peer.ID == n.ID() {
+		err = fmt.Errorf("device %s is self", id)
+		return
+	}
+
+	device, discoverErr := n.discoverDevice(peer)
+	if discoverErr != nil {
+		err = discoverErr
+		return
+	}
+
+	healthCheckErr := n.healthCheckDevice(device)
+	if healthCheckErr != nil {
+		err = healthCheckErr
+		return
+	}
+
+	return
+}
+
 func (n *Node) DiscoverDevices() {
 	ctx := n.CTX
 
@@ -351,50 +488,16 @@ func (n *Node) DiscoverDevices() {
 					continue
 				}
 
-				if peer.ID == n.ID() {
-					sysInfo, sysInfoErr := util.GetSystemInformation()
-					if sysInfoErr != nil {
-						logger.Fatalln(sysInfoErr)
-						return
-					}
-					n.DLock.Lock()
-					n.Devices[id] = Device{
-						ID:      peer.ID,
-						Status:  "healthy",
-						SysInfo: sysInfo,
-					}
-					n.DLock.Unlock()
-					continue
-				}
-
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
 
-					if pingPongErr := n.Ping(peer.ID); pingPongErr != nil {
-						n.Host.Network().ClosePeer(peer.ID)
-						n.Host.Peerstore().RemovePeer(peer.ID)
-						n.Host.Peerstore().ClearAddrs(peer.ID)
-						n.DHT.RoutingTable().RemovePeer(peer.ID)
-						n.DHT.RefreshRoutingTable()
+					device, discoverErr := n.discoverDevice(peer)
+					if discoverErr != nil {
+						logger.Debugf("Failed connecting to %s, error: %s\n", peer.ID.String(), discoverErr)
 						return
 					}
-
-					logger.Debugf("Found peer: %v", peer)
-
-					n.DLock.Lock()
-					n.Devices[id] = Device{
-						ID:     peer.ID,
-						Status: DeviceStatusDiscovered,
-					}
-					n.DLock.Unlock()
-
-					err := n.Host.Connect(ctx, peer)
-					if err != nil {
-						logger.Infof("Failed connecting to %s, error: %s\n", peer.ID, err)
-					} else {
-						logger.Infof("Connected to peer %s", peer.ID.String())
-					}
+					logger.Infof("Connected to peer %s", device.ID.String())
 				}()
 			}
 			wg.Wait()
@@ -417,62 +520,18 @@ func (n *Node) HealthcheckDevices() {
 
 func (n *Node) UpdateDevices() {
 	var wg sync.WaitGroup
-	for deviceId, device := range n.Devices {
+	for _, device := range n.Devices {
 		if device.ID == n.ID() {
 			continue
-		}
-
-		disconnect := func() {
-			logger.Debugf("disconnecting device %v", device.ID)
-			n.DLock.Lock()
-			delete(n.Devices, deviceId)
-			n.DLock.Unlock()
-			if n.Bootstrapper {
-				n.Host.Peerstore().RemovePeer(device.ID)
-			}
 		}
 
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 
-			switch device.Status {
-			case DeviceStatusDiscovered:
-				deviceInfoStr, deviceInfoErr := n.GetEcho(device.ID, constant.StellarEchoDeviceInfo)
-				if deviceInfoErr != nil {
-					defer disconnect()
-					return
-				}
-
-				var d Device
-				decodeErr := json.Unmarshal([]byte(deviceInfoStr), &d)
-				if decodeErr != nil {
-					defer disconnect()
-					return
-				}
-				if d.ID != device.ID {
-					logger.Errorf("fatal device handshake, device id not matched: %v, %v", device.ID, d.ID)
-					defer disconnect()
-					return
-				}
-
-				n.DLock.Lock()
-				device.ReferenceToken = d.ReferenceToken
-				device.Status = DeviceStatusHealthy
-				device.SysInfo = d.SysInfo
-				device.Timestamp = time.Now().UTC()
-				n.Devices[deviceId] = device
-				n.DLock.Unlock()
-			case DeviceStatusHealthy:
-				if pingPongErr := n.Ping(device.ID); pingPongErr != nil {
-					defer disconnect()
-					return
-				}
-
-				n.DLock.Lock()
-				device.Timestamp = time.Now().UTC()
-				n.Devices[deviceId] = device
-				n.DLock.Unlock()
+			healthCheckErr := n.healthCheckDevice(&device)
+			if healthCheckErr != nil {
+				return
 			}
 		}()
 	}

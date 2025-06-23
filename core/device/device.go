@@ -1,6 +1,7 @@
 package device
 
 import (
+	"stellar/core/protocols/compute"
 	"stellar/core/socket"
 	"stellar/p2p/node"
 	"stellar/p2p/protocols/echo"
@@ -50,6 +51,8 @@ func (d *Device) Init(listenHost string, listenPort uint64) {
 	file.BindFileStream(n)
 
 	d.Proxy = proxy.NewProxyManager(n)
+
+	compute.BindComputeStream(n)
 
 	d.Node = n
 }

@@ -21,6 +21,24 @@ var logger = golog.Logger("stellar-conda")
 
 const CONDA_VERSION = "25.3.1-1"
 
+var CondaPath string = ""
+
+func UpdateCondaPath() bool {
+	condaPath, err := CommandPath()
+	if err != nil {
+		logger.Warnf("error getting conda command path: %v", err)
+		return false
+	}
+
+	CondaPath = condaPath
+	logger.Infof("conda command path is %s", CondaPath)
+	return true
+}
+
+func init() {
+	UpdateCondaPath()
+}
+
 func CondaDownloadPath() (string, error) {
 	appDir, fileErr := constant.StellarPath()
 	if fileErr != nil {
