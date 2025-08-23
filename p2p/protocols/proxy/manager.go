@@ -29,7 +29,7 @@ func NewProxyManager(node *node.Node) *ProxyManager {
 	return &manager
 }
 
-func (m *ProxyManager) Proxy(peer peer.ID, hostPort uint64, destAddr string) (err error) {
+func (m *ProxyManager) Proxy(peer peer.ID, hostPort uint64, destAddr string) (proxy *TcpProxyService, err error) {
 	// proxyAddr, err := ma.NewMultiaddr(fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", hostPort))
 	// if err != nil {
 	// 	return
@@ -44,7 +44,7 @@ func (m *ProxyManager) Proxy(peer peer.ID, hostPort uint64, destAddr string) (er
 		}
 	}
 
-	proxy := NewTcpProxyService(m.node, hostPort, peer, destAddr)
+	proxy = NewTcpProxyService(m.node, hostPort, peer, destAddr)
 	m.lock.Lock()
 	m.proxies = append(m.proxies, proxy)
 	m.lock.Unlock()

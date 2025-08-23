@@ -67,11 +67,11 @@ func (d *Device) StartDiscovery() {
 }
 
 func (d *Device) StartAPI(port uint64) {
-	s := socket.APIServer{Node: d.Node}
+	s := socket.APIServer{Node: d.Node, Proxy: d.Proxy}
 	go s.StartServer(port)
 }
 
 func (d *Device) StartUnixSocket() {
-	s := socket.APIServer{Node: d.Node}
+	s := socket.APIServer{Node: d.Node, Proxy: d.Proxy}
 	go s.StartSocket()
 }

@@ -591,7 +591,7 @@ func (app *GUIApp) initProxies() fyne.CanvasObject {
 					return
 				}
 
-				if proxyErr := app.proxy.Proxy(device.ID, port, proxyAddress.Text); proxyErr != nil {
+				if _, proxyErr := app.proxy.Proxy(device.ID, port, proxyAddress.Text); proxyErr != nil {
 					app.showErrWithWindow(proxyErr, w)
 					return
 				}
@@ -711,6 +711,7 @@ func (app *GUIApp) Setup() {
 
 			device.StartDiscovery()
 			device.StartUnixSocket()
+			device.StartAPI(1524)
 
 			app.node = device.Node
 			app.proxy = device.Proxy
