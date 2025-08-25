@@ -17,7 +17,7 @@ import (
 	manet "github.com/multiformats/go-multiaddr/net"
 )
 
-var logger = golog.Logger("stellar-p2p-proxy")
+var logger = golog.Logger("stellar-p2p-protocols-proxy")
 
 // ProxyService provides HTTP proxying on top of libp2p by launching an
 // HTTP server which tunnels the requests to a destination peer running
@@ -61,7 +61,7 @@ func streamHandler(stream network.Stream) {
 	// Read the HTTP request from the buffer
 	req, err := http.ReadRequest(buf)
 	if err != nil {
-		stream.Reset()
+		stream.ResetWithError(406)
 		logger.Error(err)
 		return
 	}
@@ -85,7 +85,7 @@ func streamHandler(stream network.Stream) {
 	logger.Infof("Making request to %s", req.URL)
 	resp, err := http.DefaultTransport.RoundTrip(outreq)
 	if err != nil {
-		stream.Reset()
+		stream.ResetWithError(404)
 		logger.Error(err)
 		return
 	}
@@ -102,10 +102,6 @@ func (p *ProxyService) Bind() {
 	p.host.SetStreamHandler(constant.StellarProxyProtocol, streamHandler)
 
 	logger.Info("Proxy server is ready")
-	logger.Info("libp2p-peer addresses:")
-	for _, a := range p.host.Addrs() {
-		logger.Infof("%s/ipfs/%s", a, p.host.ID())
-	}
 }
 
 // Serve listens on the ProxyService's proxy address. This effectively
@@ -143,7 +139,7 @@ func (p *ProxyService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// r.Write() writes the HTTP request to the stream.
 	err = r.Write(stream)
 	if err != nil {
-		stream.Reset()
+		stream.ResetWithError(500)
 		logger.Error(err)
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return
@@ -154,7 +150,7 @@ func (p *ProxyService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	buf := bufio.NewReader(stream)
 	resp, err := http.ReadResponse(buf, r)
 	if err != nil {
-		stream.Reset()
+		stream.ResetWithError(500)
 		logger.Error(err)
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return

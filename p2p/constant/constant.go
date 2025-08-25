@@ -17,4 +17,20 @@ const (
 
 const StellarProxyProtocol protocol.ID = "/stellar-proxy/1.0.0"
 
-const StellarFileProtocol protocol.ID = "/stellar-file/1.0.0"
+const StellarFileProtocol protocol.ID = "/stellar-file/1.0.1"
+
+const (
+	StellarFileUnknownCommand string = "unkown"
+	StellarFileList           string = "ls"
+	StellarFileGet            string = "get"
+	StellarFileSend           string = "send"
+)
+
+const StellarComputeProtocol protocol.ID = "/stellar-compute/1.0.0"
+
+const (
+	StellarComputeUnknownCommand      string = "unkown"
+	StellarComputePrepareCondaPython  string = "prepCondaPython"
+	StellarComputeListCondaPythonEnvs string = "listCondaPythonEnvs"
+	StellarComputeExecuteScript       string = "executeScript"
+)

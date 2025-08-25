@@ -18,22 +18,24 @@ import (
 )
 
 type TcpProxyService struct {
-	node   *node.Node
-	dest   peer.ID
-	port   uint64
-	ctx    context.Context
-	cancel context.CancelFunc
+	node     *node.Node
+	Port     uint64
+	Dest     peer.ID
+	DestAddr string
+	ctx      context.Context
+	cancel   context.CancelFunc
 }
 
-func NewTcpProxyService(n *node.Node, port uint64, dest peer.ID) *TcpProxyService {
+func NewTcpProxyService(n *node.Node, port uint64, dest peer.ID, destAddr string) *TcpProxyService {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	return &TcpProxyService{
-		node:   n,
-		dest:   dest,
-		port:   port,
-		ctx:    ctx,
-		cancel: cancel,
+		node:     n,
+		Port:     port,
+		Dest:     dest,
+		DestAddr: destAddr,
+		ctx:      ctx,
+		cancel:   cancel,
 	}
 }
 
@@ -56,19 +58,15 @@ func tcpStreamHandler(stream network.Stream) {
 		return
 	}
 	p.stream = stream
-	defer p.Close("proxy closed", nil)
+	defer p.Close("proxy closed%v", nil)
 
 	p.Start()
 }
 
 func (p *TcpProxyService) Bind() {
-	p.node.Host.SetStreamHandler(constant.StellarProxyProtocol, tcpStreamHandler)
+	p.node.Host.SetStreamHandler(constant.StellarProxyProtocol, p.node.Policy.AuthorizeStream(tcpStreamHandler))
 
 	logger.Info("TCP Proxy server is ready")
-	logger.Info("libp2p-peer addresses:")
-	for _, a := range p.node.Host.Addrs() {
-		logger.Infof("%s/ipfs/%s", a, p.node.Host.ID())
-	}
 }
 
 func (p *TcpProxyService) Close() {
@@ -84,14 +82,14 @@ func (p *TcpProxyService) Done() bool {
 	}
 }
 
-func (p *TcpProxyService) Serve(destAddr string) error {
-	if destAddr != "" {
-		laddr, err := net.ResolveTCPAddr("tcp", fmt.Sprintf("0.0.0.0:%d", p.port))
+func (p *TcpProxyService) Serve() error {
+	if p.DestAddr != "" {
+		laddr, err := net.ResolveTCPAddr("tcp", fmt.Sprintf("0.0.0.0:%d", p.Port))
 		if err != nil {
 			logger.Warn("Failed to resolve local address: %s", err)
 			return err
 		}
-		raddr, err := net.ResolveTCPAddr("tcp", destAddr)
+		raddr, err := net.ResolveTCPAddr("tcp", p.DestAddr)
 		if err != nil {
 			logger.Warn("Failed to resolve remote address: %s", err)
 			return err
@@ -104,7 +102,7 @@ func (p *TcpProxyService) Serve(destAddr string) error {
 
 		logger.Infof("proxy listening on %v for %v", laddr, raddr)
 
-		id := p.dest.String()
+		id := p.Dest.String()
 		cleanup := func() {
 			listener.Close()
 			p.Close()
@@ -159,7 +157,7 @@ func (p *TcpProxyService) acceptConnection(conn *net.TCPConn, id string, laddr, 
 		return
 	}
 
-	stream, err := p.node.Host.NewStream(p.ctx, p.dest, constant.StellarProxyProtocol)
+	stream, err := p.node.Host.NewStream(p.ctx, p.Dest, constant.StellarProxyProtocol)
 	if err != nil {
 		logger.Error(err)
 		return
@@ -168,7 +166,7 @@ func (p *TcpProxyService) acceptConnection(conn *net.TCPConn, id string, laddr, 
 
 	proxy := NewLocal(conn, laddr, raddr, stream)
 	proxy.Nagles = false
-	defer proxy.Close("proxy closed", nil)
+	defer proxy.Close("proxy closed%v", nil)
 
 	remoteProxy := proxy.ToRemoteProxy()
 	jsonData, err := json.Marshal(remoteProxy)
@@ -251,7 +249,7 @@ func (p *RemoteProxy) Close(s string, err error) {
 		return
 	}
 	if err != io.EOF {
-		logger.Warn(s, err)
+		logger.Warnf(s, err)
 	}
 	p.errsig <- true
 	p.closed = true
@@ -347,6 +345,7 @@ func (p *Proxy) Start(ctx context.Context) {
 }
 
 func (p *Proxy) Close(s string, err error) {
+	// TODO improve error handling
 	if p.closed {
 		return
 	}
@@ -355,6 +354,7 @@ func (p *Proxy) Close(s string, err error) {
 	}
 	p.errsig <- true
 	p.closed = true
+	p.stream.ResetWithError(500)
 }
 
 func (p *Proxy) pipe(ctx context.Context, src, dst io.ReadWriter) {
@@ -367,7 +367,7 @@ func (p *Proxy) pipe(ctx context.Context, src, dst io.ReadWriter) {
 
 		select {
 		case <-ctx.Done():
-			p.Close("context done", nil)
+			p.Close("context done%v", nil)
 			return
 		default:
 			n, err := src.Read(buff)

@@ -1,25 +1,57 @@
+x-defaults: &defaults
+  build: .
+  command: node
+  depends_on:
+    bootstrap:
+      condition: service_healthy
+  volumes:
+    - ./bootstrappers.txt:/app/bootstrappers.txt
+    - ./data/test:/app/data
+
 services:
   bootstrap:
     build: .
-    command: node -port 43210 -b64privkey OqMbrJvWP4WqTWlAsP13t9SF9N01xH26bzYWqOGeS+h6Or5xJslRCURpxha/n0HCr0TSUDpZ8kzdtXY66FIEBQ== -bootstrapper
+    command: bootstrapper -port 43210 -b64privkey ${BOOTSTRAP_KEY} -relay -debug
     ports:
       - 43210:43210
+      - 5001:5001
+    healthcheck:
+      test: [ "CMD", "ls" ]
+      start_period: 5s
+  node:
+    <<: *defaults
+    command: node -reference_token ${DEVICE_REFERENCE_TOKEN}
     volumes:
+      - ./bootstrappers.txt:/app/bootstrappers.txt
+      - ./data/test:/app/data
       - ./cache/.conda:/root/.conda
       - ./cache/stellar:/root/.local/share/Stellar
-      - ./test.py:/app/test.py
       - ./environment.yaml:/app/environment.yaml
+      - ./test.py:/app/test.py
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
               count: all
-              capabilities: [gpu]
-  node:
-    build: .
-    command: node -reference_token ${DEVICE_REFERENCE_TOKEN}
-    volumes:
-      - ./bootstrappers.txt:/app/bootstrappers.txt
+              capabilities: [ gpu ]
+  node_cluster_1:
+    <<: *defaults
+    networks:
+      - pnet_1
     deploy:
       replicas: 2
+  node_cluster_2:
+    <<: *defaults
+    networks:
+      - pnet_2
+    deploy:
+      replicas: 2
+  node_bulk:
+    <<: *defaults
+    deploy:
+      replicas: 2
+
+networks:
+  pnet_1:
+  pnet_2:

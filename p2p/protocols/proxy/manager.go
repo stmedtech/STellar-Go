@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"fmt"
 	"stellar/p2p/node"
 	"sync"
 
@@ -22,27 +23,34 @@ func NewProxyManager(node *node.Node) *ProxyManager {
 	// proxy := NewHttpProxyService(node.Host, nil, "")
 	// proxy.Bind()
 
-	proxy := NewTcpProxyService(node, 0, "")
+	proxy := NewTcpProxyService(node, 0, "", "")
 	proxy.Bind()
 
 	return &manager
 }
 
-func (m *ProxyManager) Proxy(peer peer.ID, hostPort uint64, destAddr string) error {
+func (m *ProxyManager) Proxy(peer peer.ID, hostPort uint64, destAddr string) (proxy *TcpProxyService, err error) {
 	// proxyAddr, err := ma.NewMultiaddr(fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", hostPort))
 	// if err != nil {
-	// 	return err
+	// 	return
 	// }
 	// proxy := NewHttpProxyService(n.Host, proxyAddr, peer)
-	// proxy.Serve()s
+	// proxy.Serve()
 
-	proxy := NewTcpProxyService(m.node, hostPort, peer)
+	for _, p := range m.proxies {
+		if p.Port == hostPort {
+			err = fmt.Errorf("proxy port %d already exist", hostPort)
+			return
+		}
+	}
+
+	proxy = NewTcpProxyService(m.node, hostPort, peer, destAddr)
 	m.lock.Lock()
 	m.proxies = append(m.proxies, proxy)
 	m.lock.Unlock()
 
-	proxy.Serve(destAddr)
-	return nil
+	proxy.Serve()
+	return
 }
 
 func (m *ProxyManager) Proxies() []*TcpProxyService {
@@ -61,7 +69,7 @@ func (m *ProxyManager) Proxies() []*TcpProxyService {
 func (m *ProxyManager) Close(port uint64) {
 	m.lock.Lock()
 	for _, proxy := range m.proxies {
-		if proxy.port == port {
+		if proxy.Port == port {
 			if !proxy.Done() {
 				proxy.Close()
 			}

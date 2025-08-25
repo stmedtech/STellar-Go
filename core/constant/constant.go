@@ -12,6 +12,8 @@ var logger = golog.Logger("stellar-core-constant")
 
 var STELLAR_PATH string = ""
 
+const StellarAppID = "com.stmedicaltechnologyinc.stellar"
+
 func StellarPath() (string, error) {
 	homeDir, fileErr := os.UserHomeDir()
 	switch runtime.GOOS {

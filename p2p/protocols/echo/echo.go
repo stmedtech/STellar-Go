@@ -12,17 +12,19 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 )
 
-var logger = golog.Logger("stellar-p2p-echo")
+var logger = golog.Logger("stellar-p2p-protocols-echo")
 
 func BindEchoStream(n *node.Node) {
 	n.Host.SetStreamHandler(constant.StellarEchoProtocol, func(s network.Stream) {
 		if err := doStellarEcho(n, s); err != nil {
+			// TODO improve error handling
 			logger.Warnf("echo error: %v", err)
-			s.Reset()
+			s.ResetWithError(406)
 		} else {
 			s.Close()
 		}
 	})
+	logger.Info("Echo protocol is ready")
 }
 
 func doStellarEcho(n *node.Node, s network.Stream) error {
@@ -46,7 +48,6 @@ func doStellarEcho(n *node.Node, s network.Stream) error {
 		device := node.Device{
 			ID:             n.ID(),
 			ReferenceToken: n.ReferenceToken,
-			RelayAddr:      n.RelayAddr,
 			SysInfo:        sysInfo,
 		}
 		jsonData, jsonErr := json.Marshal(device)

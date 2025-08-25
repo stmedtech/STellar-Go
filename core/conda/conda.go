@@ -19,6 +19,26 @@ import (
 
 var logger = golog.Logger("stellar-conda")
 
+const CONDA_VERSION = "25.3.1-1"
+
+var CondaPath string = ""
+
+func UpdateCondaPath() bool {
+	condaPath, err := CommandPath()
+	if err != nil {
+		logger.Warnf("error getting conda command path: %v", err)
+		return false
+	}
+
+	CondaPath = condaPath
+	logger.Infof("conda command path is %s", CondaPath)
+	return true
+}
+
+func init() {
+	UpdateCondaPath()
+}
+
 func CondaDownloadPath() (string, error) {
 	appDir, fileErr := constant.StellarPath()
 	if fileErr != nil {
@@ -317,8 +337,8 @@ func Download(folder, url string) (string, error) {
 	}
 }
 
-func DownloadUrl(pythonVersion string) (string, error) {
-	url := fmt.Sprintf("https://repo.anaconda.com/miniconda/Miniconda3-%v.3.1-1-", pythonVersion)
+func DownloadUrl(pythonVersion, condaVersion string) (string, error) {
+	url := fmt.Sprintf("https://repo.anaconda.com/miniconda/Miniconda3-%s_%s-", pythonVersion, condaVersion)
 
 	switch os := runtime.GOOS; os {
 	case "darwin":
@@ -360,7 +380,7 @@ func Install(version string) error {
 		return fileErr
 	}
 
-	condaDownloadUrl, err := DownloadUrl(version)
+	condaDownloadUrl, err := DownloadUrl(version, CONDA_VERSION)
 	if err != nil {
 		return err
 	}
@@ -374,7 +394,7 @@ func Install(version string) error {
 	switch os := runtime.GOOS; os {
 	case "darwin":
 	case "linux":
-		cmd := exec.Command("/bin/sh", filePath, "-b", "-p", filepath.Join(appDir, "conda"))
+		cmd := exec.Command("/bin/sh", filePath, "-b", "-f", "-p", filepath.Join(appDir, "conda"))
 		stdout, cmdErr := runCommand(cmd)
 		if cmdErr != nil {
 			return fmt.Errorf("installation failed due to %v", cmdErr)
