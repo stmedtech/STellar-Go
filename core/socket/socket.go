@@ -45,6 +45,8 @@ func (s *APIServer) StartSocket() {
 	}
 	defer os.Remove(socketPath)
 
+	logger.Infof("Stellar API server started on %s", socketPath)
+
 	http.Serve(listener, s.server)
 
 	defer listener.Close()

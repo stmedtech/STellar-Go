@@ -34,6 +34,8 @@ func nodeCommand() {
 	referenceToken := nodeCmd.String("reference_token", "", "specify custom reference token")
 	metrics := nodeCmd.Bool("metrics", false, "open metrics server or not")
 	disablePolicy := nodeCmd.Bool("disable-policy", false, "disable policy or not")
+	noSocketServer := nodeCmd.Bool("no-socket", false, "open socket server or not")
+	apiServer := nodeCmd.Bool("api", false, "open api server or not")
 
 	nodeCmd.Parse(os.Args[2:])
 
@@ -60,7 +62,14 @@ func nodeCommand() {
 	}
 
 	device.StartDiscovery()
-	device.StartUnixSocket()
+
+	if !*noSocketServer {
+		device.StartUnixSocket()
+	}
+
+	if *apiServer {
+		device.StartAPI(1524)
+	}
 
 	<-make(chan struct{}) // hang forever
 }

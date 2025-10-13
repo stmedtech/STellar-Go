@@ -228,6 +228,9 @@ func NewNode(
 
 	logger.Infof("Start listening to %v...", n.Host.Addrs())
 
+	// Start providing peers for auto-relay
+	go n.Provide(peerChan)
+
 	if _, dhtErr := n.InitDHT(false); dhtErr != nil {
 		err = dhtErr
 		return
