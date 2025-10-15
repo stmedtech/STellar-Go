@@ -73,7 +73,7 @@ class FileProtocol:
             
         try:
             response = self.client.get(f"/devices/{device_id}/tree")
-            return FileTree.model_validate(response)
+            return FileTree.model_validate({'files': response})
         except Exception as e:
             raise FileTransferError(f"Failed to get file tree from device {device_id}: {e}")
     
@@ -114,8 +114,8 @@ class FileProtocol:
             response = self.client.get(
                 f"/devices/{device_id}/files/download",
                 params={
-                    "remote_path": safe_remote_path,
-                    "dest_path": local_path,
+                    "remotePath": safe_remote_path,
+                    "destPath": local_path,
                 }
             )
             
@@ -177,8 +177,8 @@ class FileProtocol:
             response = self.client.post(
                 f"/devices/{device_id}/files/upload",
                 data={
-                    "local_path": local_path,
-                    "remote_path": safe_remote_path,
+                    "localPath": local_path,
+                    "remotePath": safe_remote_path,
                 }
             )
             

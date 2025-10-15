@@ -3,8 +3,8 @@
 from enum import Enum
 from typing import Dict, Any, List, Optional
 from datetime import datetime
-from pydantic import BaseModel, ConfigDict, Field
-from pydantic.alias_generators import to_pascal
+from pydantic import BaseModel, Field, ConfigDict
+from pydantic.alias_generators import to_snake
 
 
 class DeviceStatus(str, Enum):
@@ -16,6 +16,8 @@ class DeviceStatus(str, Enum):
 
 class SystemInformation(BaseModel):
     """System information data model."""
+    model_config = ConfigDict(alias_generator=to_snake, populate_by_name=True)
+
     platform: Optional[str] = Field(alias="Platform", default=None)
     cpu: Optional[str] = Field(alias="CPU", default=None)
     gpu: Optional[List[str]] = Field(alias="GPU", default=None)
@@ -24,6 +26,8 @@ class SystemInformation(BaseModel):
 
 class Device(BaseModel):
     """Device data model."""
+    model_config = ConfigDict(alias_generator=to_snake, populate_by_name=True)
+
     id: str = Field(alias="ID")
     reference_token: Optional[str] = Field(alias="ReferenceToken", default=None)
     status: Optional[DeviceStatus] = Field(alias="Status", default=None)
@@ -32,6 +36,8 @@ class Device(BaseModel):
 
 class NodeInfo(BaseModel):
     "Node Info data model"
+    model_config = ConfigDict(alias_generator=to_snake, populate_by_name=True)
+
     id: str = Field(alias="NodeID")
     addresses: List[str] = Field(alias="Addresses")
     bootstrapper: bool = Field(alias="Bootstrapper")

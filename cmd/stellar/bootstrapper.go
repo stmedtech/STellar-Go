@@ -17,6 +17,7 @@ func bootstrapperCommand() {
 	listenHost := bootstrapperCmd.String("host", "0.0.0.0", "set listening host")
 	listenPort := bootstrapperCmd.Int("port", 0, "set listening port")
 	relay := bootstrapperCmd.Bool("relay", false, "use this node as relay node for relaying")
+	metricsPort := bootstrapperCmd.Int("metrics-port", 5001, "set metrics server port")
 
 	// Key
 	b64privkey := bootstrapperCmd.String("b64privkey", "", "import base64 encoded Ed25519 private key raw bytes")
@@ -36,7 +37,7 @@ func bootstrapperCommand() {
 		logger.Fatalln(nodeErr)
 	}
 
-	n.StartMetricsServer(5001)
+	n.StartMetricsServer(uint64(*metricsPort))
 
 	<-make(chan struct{}) // hang forever
 }

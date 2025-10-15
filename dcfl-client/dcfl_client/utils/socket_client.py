@@ -150,7 +150,11 @@ class UnixSocketClient:
     ) -> Dict[str, Any]:
         """Make POST request."""
         response = self.request_with_retry("POST", endpoint, json_data=json_data, data=data)
-        return response.json()
+        try:
+            return response.json()
+        except Exception as e:
+            print(f"Failed to parse response: {e}")
+            return response.text
         
     def put(
         self,

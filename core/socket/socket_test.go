@@ -430,10 +430,10 @@ func BenchmarkNodeInfoResponseJSON(b *testing.B) {
 func TestAPIServerStart(t *testing.T) {
 	// Test APIServer Start method
 	apiServer := &APIServer{}
-	
+
 	// Start should initialize the gin server
 	apiServer.Start()
-	
+
 	// Verify server is initialized
 	assert.NotNil(t, apiServer.server)
 }
@@ -443,14 +443,14 @@ func TestAPIServerGetHealth(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	apiServer := &APIServer{}
 	apiServer.Start()
-	
+
 	req, _ := http.NewRequest("GET", "/health", nil)
 	w := httptest.NewRecorder()
-	
+
 	apiServer.server.ServeHTTP(w, req)
-	
+
 	assert.Equal(t, http.StatusOK, w.Code)
-	
+
 	var response map[string]string
 	err := json.Unmarshal(w.Body.Bytes(), &response)
 	require.NoError(t, err)
@@ -460,13 +460,13 @@ func TestAPIServerGetHealth(t *testing.T) {
 func TestAPIServerGetNodeInfo(t *testing.T) {
 	// Test node info endpoint - this will fail because Node is nil, but we can test the endpoint exists
 	gin.SetMode(gin.TestMode)
-	
+
 	apiServer := &APIServer{}
 	apiServer.Start()
-	
+
 	req, _ := http.NewRequest("GET", "/node", nil)
 	w := httptest.NewRecorder()
-	
+
 	// Gin's recovery middleware catches panics, so we expect a 500 error
 	apiServer.server.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
@@ -474,10 +474,10 @@ func TestAPIServerGetNodeInfo(t *testing.T) {
 
 func TestAPIServerConnectToPeer(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	
+
 	apiServer := &APIServer{}
 	apiServer.Start()
-	
+
 	tests := []struct {
 		name           string
 		requestBody    map[string]string
@@ -503,16 +503,16 @@ func TestAPIServerConnectToPeer(t *testing.T) {
 			expectedStatus: http.StatusBadRequest,
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			jsonBody, _ := json.Marshal(tt.requestBody)
 			req, _ := http.NewRequest("POST", "/connect", bytes.NewBuffer(jsonBody))
 			req.Header.Set("Content-Type", "application/json")
 			w := httptest.NewRecorder()
-			
+
 			apiServer.server.ServeHTTP(w, req)
-			
+
 			assert.Equal(t, tt.expectedStatus, w.Code)
 		})
 	}
@@ -520,13 +520,13 @@ func TestAPIServerConnectToPeer(t *testing.T) {
 
 func TestAPIServerGetDevices(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	
+
 	apiServer := &APIServer{}
 	apiServer.Start()
-	
+
 	req, _ := http.NewRequest("GET", "/devices", nil)
 	w := httptest.NewRecorder()
-	
+
 	// Gin's recovery middleware catches panics, so we expect a 500 error
 	apiServer.server.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
@@ -534,10 +534,10 @@ func TestAPIServerGetDevices(t *testing.T) {
 
 func TestAPIServerGetDevice(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	
+
 	apiServer := &APIServer{}
 	apiServer.Start()
-	
+
 	tests := []struct {
 		name     string
 		deviceID string
@@ -551,13 +551,13 @@ func TestAPIServerGetDevice(t *testing.T) {
 			deviceID: "",
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			url := fmt.Sprintf("/devices/%s", tt.deviceID)
 			req, _ := http.NewRequest("GET", url, nil)
 			w := httptest.NewRecorder()
-			
+
 			apiServer.server.ServeHTTP(w, req)
 			// For empty device ID, Gin returns 301 (redirect), for valid ID it returns 500 (panic)
 			if tt.deviceID == "" {
@@ -571,13 +571,13 @@ func TestAPIServerGetDevice(t *testing.T) {
 
 func TestAPIServerGetPolicy(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	
+
 	apiServer := &APIServer{}
 	apiServer.Start()
-	
+
 	req, _ := http.NewRequest("GET", "/policy", nil)
 	w := httptest.NewRecorder()
-	
+
 	// Gin's recovery middleware catches panics, so we expect a 500 error
 	apiServer.server.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
@@ -585,10 +585,10 @@ func TestAPIServerGetPolicy(t *testing.T) {
 
 func TestAPIServerSetPolicy(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	
+
 	apiServer := &APIServer{}
 	apiServer.Start()
-	
+
 	tests := []struct {
 		name        string
 		enableValue string
@@ -606,14 +606,14 @@ func TestAPIServerSetPolicy(t *testing.T) {
 			enableValue: "invalid",
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			formData := fmt.Sprintf("enable=%s", tt.enableValue)
 			req, _ := http.NewRequest("POST", "/policy", bytes.NewBufferString(formData))
 			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 			w := httptest.NewRecorder()
-			
+
 			apiServer.server.ServeHTTP(w, req)
 			// For invalid enable value, Gin returns 406 (not acceptable), for valid values it returns 500 (panic)
 			if tt.enableValue == "invalid" {
@@ -627,13 +627,13 @@ func TestAPIServerSetPolicy(t *testing.T) {
 
 func TestAPIServerGetPolicyWhiteList(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	
+
 	apiServer := &APIServer{}
 	apiServer.Start()
-	
+
 	req, _ := http.NewRequest("GET", "/policy/whitelist", nil)
 	w := httptest.NewRecorder()
-	
+
 	// Gin's recovery middleware catches panics, so we expect a 500 error
 	apiServer.server.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
@@ -641,10 +641,10 @@ func TestAPIServerGetPolicyWhiteList(t *testing.T) {
 
 func TestAPIServerAddPolicyWhiteList(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	
+
 	apiServer := &APIServer{}
 	apiServer.Start()
-	
+
 	tests := []struct {
 		name     string
 		deviceID string
@@ -658,14 +658,14 @@ func TestAPIServerAddPolicyWhiteList(t *testing.T) {
 			deviceID: "",
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			formData := fmt.Sprintf("deviceId=%s", tt.deviceID)
 			req, _ := http.NewRequest("POST", "/policy/whitelist", bytes.NewBufferString(formData))
 			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 			w := httptest.NewRecorder()
-			
+
 			// Gin's recovery middleware catches panics, so we expect a 500 error
 			apiServer.server.ServeHTTP(w, req)
 			assert.Equal(t, http.StatusInternalServerError, w.Code)
@@ -675,10 +675,10 @@ func TestAPIServerAddPolicyWhiteList(t *testing.T) {
 
 func TestAPIServerRemovePolicyWhiteList(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	
+
 	apiServer := &APIServer{}
 	apiServer.Start()
-	
+
 	tests := []struct {
 		name     string
 		deviceID string
@@ -692,14 +692,14 @@ func TestAPIServerRemovePolicyWhiteList(t *testing.T) {
 			deviceID: "non-existent-device",
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			formData := fmt.Sprintf("deviceId=%s", tt.deviceID)
 			req, _ := http.NewRequest("DELETE", "/policy/whitelist", bytes.NewBufferString(formData))
 			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 			w := httptest.NewRecorder()
-			
+
 			// Gin's recovery middleware catches panics, so we expect a 500 error
 			apiServer.server.ServeHTTP(w, req)
 			assert.Equal(t, http.StatusInternalServerError, w.Code)
@@ -709,10 +709,10 @@ func TestAPIServerRemovePolicyWhiteList(t *testing.T) {
 
 func TestAPIServerCreateProxy(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	
+
 	apiServer := &APIServer{}
 	apiServer.Start()
-	
+
 	tests := []struct {
 		name        string
 		requestBody map[string]interface{}
@@ -735,14 +735,14 @@ func TestAPIServerCreateProxy(t *testing.T) {
 			},
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			jsonBody, _ := json.Marshal(tt.requestBody)
 			req, _ := http.NewRequest("POST", "/proxy", bytes.NewBuffer(jsonBody))
 			req.Header.Set("Content-Type", "application/json")
 			w := httptest.NewRecorder()
-			
+
 			apiServer.server.ServeHTTP(w, req)
 			// For missing device_id, Gin returns 400 (bad request), for valid request it returns 500 (panic)
 			if tt.name == "missing device_id" {
@@ -756,13 +756,13 @@ func TestAPIServerCreateProxy(t *testing.T) {
 
 func TestAPIServerListProxies(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	
+
 	apiServer := &APIServer{}
 	apiServer.Start()
-	
+
 	req, _ := http.NewRequest("GET", "/proxy", nil)
 	w := httptest.NewRecorder()
-	
+
 	// Gin's recovery middleware catches panics, so we expect a 500 error
 	apiServer.server.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
@@ -770,10 +770,10 @@ func TestAPIServerListProxies(t *testing.T) {
 
 func TestAPIServerCloseProxy(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	
+
 	apiServer := &APIServer{}
 	apiServer.Start()
-	
+
 	tests := []struct {
 		name string
 		port string
@@ -787,13 +787,13 @@ func TestAPIServerCloseProxy(t *testing.T) {
 			port: "invalid",
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			url := fmt.Sprintf("/proxy/%s", tt.port)
 			req, _ := http.NewRequest("DELETE", url, nil)
 			w := httptest.NewRecorder()
-			
+
 			apiServer.server.ServeHTTP(w, req)
 			// For invalid port, Gin returns 400 (bad request), for valid port it returns 500 (panic)
 			if tt.port == "invalid" {
@@ -809,7 +809,7 @@ func TestAPIServerStartServer(t *testing.T) {
 	// Test StartServer method (this will start a real server, so we'll just test it doesn't panic)
 	gin.SetMode(gin.TestMode)
 	apiServer := &APIServer{}
-	
+
 	// This should not panic
 	assert.NotPanics(t, func() {
 		// We can't actually start the server in tests, but we can test the setup
@@ -822,7 +822,7 @@ func TestAPIServerStartSocket(t *testing.T) {
 	// Test StartSocket method (this will try to create a unix socket, so we'll just test it doesn't panic)
 	gin.SetMode(gin.TestMode)
 	apiServer := &APIServer{}
-	
+
 	// This should not panic during setup
 	assert.NotPanics(t, func() {
 		// We can't actually start the socket in tests, but we can test the setup
@@ -839,13 +839,13 @@ func TestAPIServerStartServerWithPorts(t *testing.T) {
 // Test GetDeviceTree endpoint
 func TestAPIServerGetDeviceTree(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	
+
 	apiServer := &APIServer{}
 	apiServer.Start()
-	
+
 	req, _ := http.NewRequest("GET", "/devices/tree", nil)
 	w := httptest.NewRecorder()
-	
+
 	apiServer.server.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }
@@ -853,10 +853,10 @@ func TestAPIServerGetDeviceTree(t *testing.T) {
 // Test PingDevice endpoint
 func TestAPIServerPingDevice(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	
+
 	apiServer := &APIServer{}
 	apiServer.Start()
-	
+
 	tests := []struct {
 		name     string
 		deviceID string
@@ -870,13 +870,13 @@ func TestAPIServerPingDevice(t *testing.T) {
 			deviceID: "",
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			url := fmt.Sprintf("/devices/%s/ping", tt.deviceID)
 			req, _ := http.NewRequest("POST", url, nil)
 			w := httptest.NewRecorder()
-			
+
 			apiServer.server.ServeHTTP(w, req)
 			assert.Equal(t, http.StatusInternalServerError, w.Code)
 		})
@@ -886,10 +886,10 @@ func TestAPIServerPingDevice(t *testing.T) {
 // Test GetDeviceInfo endpoint
 func TestAPIServerGetDeviceInfo(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	
+
 	apiServer := &APIServer{}
 	apiServer.Start()
-	
+
 	tests := []struct {
 		name     string
 		deviceID string
@@ -903,13 +903,13 @@ func TestAPIServerGetDeviceInfo(t *testing.T) {
 			deviceID: "",
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			url := fmt.Sprintf("/devices/%s/info", tt.deviceID)
 			req, _ := http.NewRequest("GET", url, nil)
 			w := httptest.NewRecorder()
-			
+
 			apiServer.server.ServeHTTP(w, req)
 			assert.Equal(t, http.StatusInternalServerError, w.Code)
 		})
@@ -919,40 +919,44 @@ func TestAPIServerGetDeviceInfo(t *testing.T) {
 // Test ListFiles endpoint
 func TestAPIServerListFiles(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	
+
 	apiServer := &APIServer{}
 	apiServer.Start()
-	
+
 	tests := []struct {
-		name     string
-		deviceID string
-		path     string
+		name           string
+		deviceID       string
+		path           string
+		expectedStatus int
 	}{
 		{
-			name:     "valid device ID and path",
-			deviceID: "test-device-id",
-			path:     "/home/user",
+			name:           "valid device ID and path",
+			deviceID:       "test-device-id",
+			path:           "/home/user",
+			expectedStatus: http.StatusInternalServerError, // Will fail because Node is nil
 		},
 		{
-			name:     "empty device ID",
-			deviceID: "",
-			path:     "/home/user",
+			name:           "empty device ID",
+			deviceID:       "",
+			path:           "/home/user",
+			expectedStatus: http.StatusBadRequest, // Should return 400 for empty device ID
 		},
 		{
-			name:     "empty path",
-			deviceID: "test-device-id",
-			path:     "",
+			name:           "empty path",
+			deviceID:       "test-device-id",
+			path:           "",
+			expectedStatus: http.StatusInternalServerError, // Will fail because Node is nil
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			url := fmt.Sprintf("/devices/%s/files?path=%s", tt.deviceID, tt.path)
 			req, _ := http.NewRequest("GET", url, nil)
 			w := httptest.NewRecorder()
-			
+
 			apiServer.server.ServeHTTP(w, req)
-			assert.Equal(t, http.StatusInternalServerError, w.Code)
+			assert.Equal(t, tt.expectedStatus, w.Code)
 		})
 	}
 }
@@ -960,40 +964,55 @@ func TestAPIServerListFiles(t *testing.T) {
 // Test DownloadFile endpoint
 func TestAPIServerDownloadFile(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	
+
 	apiServer := &APIServer{}
 	apiServer.Start()
-	
+
 	tests := []struct {
-		name     string
-		deviceID string
-		filePath string
+		name           string
+		deviceID       string
+		remotePath     string
+		destPath       string
+		expectedStatus int
 	}{
 		{
-			name:     "valid device ID and file path",
-			deviceID: "test-device-id",
-			filePath: "/home/user/file.txt",
+			name:           "valid device ID and paths",
+			deviceID:       "test-device-id",
+			remotePath:     "/home/user/file.txt",
+			destPath:       "/tmp/downloaded_file.txt",
+			expectedStatus: http.StatusInternalServerError, // Will fail because Node is nil
 		},
 		{
-			name:     "empty device ID",
-			deviceID: "",
-			filePath: "/home/user/file.txt",
+			name:           "empty device ID",
+			deviceID:       "",
+			remotePath:     "/home/user/file.txt",
+			destPath:       "/tmp/downloaded_file.txt",
+			expectedStatus: http.StatusBadRequest,
 		},
 		{
-			name:     "empty file path",
-			deviceID: "test-device-id",
-			filePath: "",
+			name:           "empty remote path",
+			deviceID:       "test-device-id",
+			remotePath:     "",
+			destPath:       "/tmp/downloaded_file.txt",
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name:           "empty dest path",
+			deviceID:       "test-device-id",
+			remotePath:     "/home/user/file.txt",
+			destPath:       "",
+			expectedStatus: http.StatusBadRequest,
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			url := fmt.Sprintf("/devices/%s/files/download?path=%s", tt.deviceID, tt.filePath)
+			url := fmt.Sprintf("/devices/%s/files/download?remotePath=%s&destPath=%s", tt.deviceID, tt.remotePath, tt.destPath)
 			req, _ := http.NewRequest("GET", url, nil)
 			w := httptest.NewRecorder()
-			
+
 			apiServer.server.ServeHTTP(w, req)
-			assert.Equal(t, http.StatusBadRequest, w.Code)
+			assert.Equal(t, tt.expectedStatus, w.Code)
 		})
 	}
 }
@@ -1001,40 +1020,56 @@ func TestAPIServerDownloadFile(t *testing.T) {
 // Test UploadFile endpoint
 func TestAPIServerUploadFile(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	
+
 	apiServer := &APIServer{}
 	apiServer.Start()
-	
+
 	tests := []struct {
-		name     string
-		deviceID string
-		filePath string
+		name           string
+		deviceID       string
+		localPath      string
+		remotePath     string
+		expectedStatus int
 	}{
 		{
-			name:     "valid device ID and file path",
-			deviceID: "test-device-id",
-			filePath: "/home/user/file.txt",
+			name:           "valid device ID and paths",
+			deviceID:       "test-device-id",
+			localPath:      "/tmp/local_file.txt",
+			remotePath:     "/home/user/remote_file.txt",
+			expectedStatus: http.StatusBadRequest, // Will fail because form data is missing
 		},
 		{
-			name:     "empty device ID",
-			deviceID: "",
-			filePath: "/home/user/file.txt",
+			name:           "empty device ID",
+			deviceID:       "",
+			localPath:      "/tmp/local_file.txt",
+			remotePath:     "/home/user/remote_file.txt",
+			expectedStatus: http.StatusBadRequest,
 		},
 		{
-			name:     "empty file path",
-			deviceID: "test-device-id",
-			filePath: "",
+			name:           "empty local path",
+			deviceID:       "test-device-id",
+			localPath:      "",
+			remotePath:     "/home/user/remote_file.txt",
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name:           "empty remote path",
+			deviceID:       "test-device-id",
+			localPath:      "/tmp/local_file.txt",
+			remotePath:     "",
+			expectedStatus: http.StatusBadRequest,
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			url := fmt.Sprintf("/devices/%s/files/upload?path=%s", tt.deviceID, tt.filePath)
-			req, _ := http.NewRequest("POST", url, nil)
+			formData := fmt.Sprintf("localPath=%s&remotePath=%s", tt.localPath, tt.remotePath)
+			req, _ := http.NewRequest("POST", fmt.Sprintf("/devices/%s/files/upload", tt.deviceID), bytes.NewBufferString(formData))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 			w := httptest.NewRecorder()
-			
+
 			apiServer.server.ServeHTTP(w, req)
-			assert.Equal(t, http.StatusBadRequest, w.Code)
+			assert.Equal(t, tt.expectedStatus, w.Code)
 		})
 	}
 }
@@ -1042,10 +1077,10 @@ func TestAPIServerUploadFile(t *testing.T) {
 // Test ListCondaEnvs endpoint
 func TestAPIServerListCondaEnvs(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	
+
 	apiServer := &APIServer{}
 	apiServer.Start()
-	
+
 	tests := []struct {
 		name     string
 		deviceID string
@@ -1059,13 +1094,13 @@ func TestAPIServerListCondaEnvs(t *testing.T) {
 			deviceID: "",
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			url := fmt.Sprintf("/devices/%s/conda/envs", tt.deviceID)
 			req, _ := http.NewRequest("GET", url, nil)
 			w := httptest.NewRecorder()
-			
+
 			apiServer.server.ServeHTTP(w, req)
 			assert.Equal(t, http.StatusNotFound, w.Code)
 		})
@@ -1075,10 +1110,10 @@ func TestAPIServerListCondaEnvs(t *testing.T) {
 // Test PrepareCondaEnv endpoint
 func TestAPIServerPrepareCondaEnv(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	
+
 	apiServer := &APIServer{}
 	apiServer.Start()
-	
+
 	tests := []struct {
 		name     string
 		deviceID string
@@ -1104,13 +1139,13 @@ func TestAPIServerPrepareCondaEnv(t *testing.T) {
 			body:     "",
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			url := fmt.Sprintf("/devices/%s/conda/prepare", tt.deviceID)
 			var req *http.Request
 			var err error
-			
+
 			if tt.method == "POST" {
 				req, err = http.NewRequest("POST", url, bytes.NewBufferString(tt.body))
 				req.Header.Set("Content-Type", "application/json")
@@ -1118,9 +1153,9 @@ func TestAPIServerPrepareCondaEnv(t *testing.T) {
 				req, err = http.NewRequest("GET", url, nil)
 			}
 			require.NoError(t, err)
-			
+
 			w := httptest.NewRecorder()
-			
+
 			apiServer.server.ServeHTTP(w, req)
 			assert.Equal(t, http.StatusNotFound, w.Code)
 		})
@@ -1130,10 +1165,10 @@ func TestAPIServerPrepareCondaEnv(t *testing.T) {
 // Test ExecuteScript endpoint
 func TestAPIServerExecuteScript(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	
+
 	apiServer := &APIServer{}
 	apiServer.Start()
-	
+
 	tests := []struct {
 		name     string
 		deviceID string
@@ -1159,13 +1194,13 @@ func TestAPIServerExecuteScript(t *testing.T) {
 			body:     "",
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			url := fmt.Sprintf("/devices/%s/conda/execute", tt.deviceID)
 			var req *http.Request
 			var err error
-			
+
 			if tt.method == "POST" {
 				req, err = http.NewRequest("POST", url, bytes.NewBufferString(tt.body))
 				req.Header.Set("Content-Type", "application/json")
@@ -1173,9 +1208,9 @@ func TestAPIServerExecuteScript(t *testing.T) {
 				req, err = http.NewRequest("GET", url, nil)
 			}
 			require.NoError(t, err)
-			
+
 			w := httptest.NewRecorder()
-			
+
 			apiServer.server.ServeHTTP(w, req)
 			assert.Equal(t, http.StatusNotFound, w.Code)
 		})

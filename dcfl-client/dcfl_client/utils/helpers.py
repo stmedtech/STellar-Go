@@ -13,8 +13,16 @@ def get_default_socket_path() -> str:
         # Windows named pipe path
         return r"C:\Users\Joseph\AppData\Roaming\Stellar\stellar.sock"
     else:
-        # Unix socket path
+        # Unix socket path - check both possible locations
         home = os.path.expanduser("~")
+        
+        # First try the actual location used by the Go server
+        stellar_dir = os.path.join(home, ".local", "share", "Stellar")
+        socket_path = os.path.join(stellar_dir, "stellar.sock")
+        if os.path.exists(socket_path):
+            return socket_path
+            
+        # Fallback to the old cache location
         cache_dir = os.path.join(home, ".cache", "stellar")
         return os.path.join(cache_dir, "stellar.sock")
 

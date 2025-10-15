@@ -2,11 +2,14 @@
 
 from typing import List, Dict, Any, Optional, Callable
 from datetime import datetime
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
+from pydantic.alias_generators import to_snake
 
 
 class FileEntry(BaseModel):
     """File entry model."""
+    model_config = ConfigDict(alias_generator=to_snake, populate_by_name=True)
+
     directory_name: str = Field(alias="DirectoryName", default="")
     filename: str = Field(alias="Filename", default="")
     size: int = Field(alias="Size", default=0)
@@ -22,11 +25,15 @@ class FileEntry(BaseModel):
 
 class FileTree(BaseModel):
     """File tree model."""
+    model_config = ConfigDict(alias_generator=to_snake, populate_by_name=True)
+
     files: List[FileEntry]
 
 
 class ExecutionResult(BaseModel):
     """Script execution result model."""
+    model_config = ConfigDict(alias_generator=to_snake, populate_by_name=True)
+
     success: bool
     output: str = ""
     result: str = ""
@@ -38,6 +45,8 @@ class ExecutionResult(BaseModel):
 
 class ProxyInfo(BaseModel):
     """Proxy connection information."""
+    model_config = ConfigDict(alias_generator=to_snake, populate_by_name=True)
+
     local_port: int = Field(alias="Port")
     remote_addr: str = Field(alias="DestAddr")
     device_id: str = Field(alias="Dest")
@@ -45,6 +54,8 @@ class ProxyInfo(BaseModel):
 
 class CondaEnvConfig(BaseModel):
     """Conda environment configuration."""
+    model_config = ConfigDict(alias_generator=to_snake, populate_by_name=True)
+
     name: str
     python_version: str = "3.9"
     packages: List[str] = []
@@ -57,6 +68,8 @@ class CondaEnvConfig(BaseModel):
 
 class ScriptConfig(BaseModel):
     """Script execution configuration."""
+    model_config = ConfigDict(alias_generator=to_snake, populate_by_name=True)
+
     script_path: str
     env: str = "base"
     python_version: str = "3.9"
@@ -69,6 +82,8 @@ class ScriptConfig(BaseModel):
 
 class FLTaskConfig(BaseModel):
     """Federated learning task configuration."""
+    model_config = ConfigDict(alias_generator=to_snake, populate_by_name=True)
+
     client_script: str
     framework: str = "flower"  # flower, nvflare
     python_version: str = "3.9"
@@ -82,6 +97,8 @@ class FLTaskConfig(BaseModel):
 
 class FLResult(BaseModel):
     """Federated learning result."""
+    model_config = ConfigDict(alias_generator=to_snake, populate_by_name=True)
+
     success: bool
     model_update: Optional[str] = None
     metrics: Dict[str, Any] = {}

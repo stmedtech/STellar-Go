@@ -8,7 +8,6 @@ WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 
-COPY *.go ./
 COPY p2p ./p2p
 COPY core ./core
 COPY cmd ./cmd

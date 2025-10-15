@@ -79,6 +79,11 @@ func TestMainFunction(t *testing.T) {
 						keyCommand()
 					case "bootstrapper":
 						// Use a timeout for bootstrapper as it may hang
+						// Set up args to use different ports to avoid conflicts
+						originalArgs := os.Args
+						os.Args = []string{"stellar", "bootstrapper", "-port", "5002", "-metrics-port", "5003"}
+						defer func() { os.Args = originalArgs }()
+
 						done := make(chan bool)
 						go func() {
 							bootstrapperCommand()
@@ -136,7 +141,7 @@ func TestMainFunctionNoArgs(t *testing.T) {
 	// Test main function behavior with no arguments
 	// This is tricky to test directly since main() calls os.Exit()
 	// We'll test the logic that would be executed
-	
+
 	// Save original args
 	originalArgs := os.Args
 	defer func() {
@@ -145,7 +150,7 @@ func TestMainFunctionNoArgs(t *testing.T) {
 
 	// Test with no subcommand
 	os.Args = []string{"stellar"}
-	
+
 	// The main function should detect this and exit
 	// We can't test the actual exit, but we can test the condition
 	assert.True(t, len(os.Args) < 2)
@@ -161,7 +166,7 @@ func TestMainFunctionUnknownCommand(t *testing.T) {
 
 	// Test with unknown command
 	os.Args = []string{"stellar", "unknown"}
-	
+
 	// The main function should detect this and exit
 	// We can't test the actual exit, but we can test the condition
 	assert.True(t, len(os.Args) >= 2)
@@ -255,7 +260,7 @@ func TestCommandSwitch(t *testing.T) {
 func TestMainFunctionIntegration(t *testing.T) {
 	// Test the main function logic without actually calling main()
 	// This tests the argument parsing logic
-	
+
 	tests := []struct {
 		name     string
 		args     []string
@@ -301,7 +306,7 @@ func TestMainFunctionIntegration(t *testing.T) {
 
 func TestMainFunctionEdgeCases(t *testing.T) {
 	// Test edge cases for the main function
-	
+
 	tests := []struct {
 		name string
 		args []string
@@ -324,7 +329,7 @@ func TestMainFunctionEdgeCases(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// Test that the argument parsing logic handles edge cases
 			hasSubcommand := len(tt.args) >= 2
-			
+
 			if tt.name == "empty args" || tt.name == "single arg" {
 				assert.False(t, hasSubcommand)
 			} else {
@@ -337,7 +342,7 @@ func TestMainFunctionEdgeCases(t *testing.T) {
 func BenchmarkMainFunctionLogic(b *testing.B) {
 	// Benchmark the main function logic
 	args := []string{"stellar", "key"}
-	
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		// Test the argument parsing logic
@@ -352,7 +357,7 @@ func BenchmarkCommandSwitch(b *testing.B) {
 	// Benchmark the command switch logic
 	command := "key"
 	validCommands := []string{"key", "bootstrapper", "node", "gui", "test"}
-	
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		isValid := false

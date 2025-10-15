@@ -221,79 +221,145 @@ func (s *APIServer) ListFiles(c *gin.Context) {
 	deviceId := c.Param("deviceId")
 	path := c.DefaultQuery("path", "/")
 
+	if deviceId == "" {
+		logger.Warn("ListFiles called with empty device ID")
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Device ID is required"})
+		return
+	}
+
 	device, err := s.Node.GetDevice(deviceId)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Device not found"})
+		logger.Warnf("Device not found: %s, error: %v", deviceId, err)
+		c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("Device not found: %s", deviceId)})
 		return
 	}
 
+	logger.Infof("Listing files for device %s at path: %s", deviceId, path)
 	files, lsErr := file.List(s.Node, device.ID, path)
 	if lsErr != nil {
-		logger.Warn(lsErr)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": lsErr.Error()})
+		logger.Errorf("Failed to list files for device %s at path %s: %v", deviceId, path, lsErr)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":     fmt.Sprintf("Failed to list files: %v", lsErr),
+			"device_id": deviceId,
+			"path":      path,
+		})
 		return
 	}
 
+	logger.Infof("Successfully listed %d files for device %s", len(files), deviceId)
 	c.JSON(http.StatusOK, files)
 }
 
 func (s *APIServer) DownloadFile(c *gin.Context) {
 	deviceId := c.Param("deviceId")
-	remotePath := c.Query("remote_path")
-	destPath := c.Query("dest_path")
+	remotePath := c.Query("remotePath")
+	destPath := c.Query("destPath")
+
+	if deviceId == "" {
+		logger.Warn("DownloadFile called with empty device ID")
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Device ID is required"})
+		return
+	}
 
 	if remotePath == "" || destPath == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "remote_path and dest_path are required"})
+		logger.Warnf("DownloadFile called with missing parameters - remotePath: %s, destPath: %s", remotePath, destPath)
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":      "remotePath and destPath are required",
+			"remotePath": remotePath,
+			"destPath":   destPath,
+		})
 		return
 	}
 
 	device, err := s.Node.GetDevice(deviceId)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Device not found"})
+		logger.Warnf("Device not found for download: %s, error: %v", deviceId, err)
+		c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("Device not found: %s", deviceId)})
 		return
 	}
 
-	filePath, downloadErr := file.Download(s.Node, device.ID, remotePath, destPath)
+	// Extract filename from remotePath and pass full destPath
+	fileName := filepath.Base(remotePath)
+
+	logger.Infof("Downloading file %s from device %s to %s", fileName, deviceId, destPath)
+	filePath, downloadErr := file.Download(s.Node, device.ID, fileName, destPath)
 	if downloadErr != nil {
-		logger.Warn(downloadErr)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": downloadErr.Error()})
+		logger.Errorf("Failed to download file %s from device %s: %v", fileName, deviceId, downloadErr)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":       fmt.Sprintf("Download failed: %v", downloadErr),
+			"device_id":   deviceId,
+			"remote_path": remotePath,
+			"dest_path":   destPath,
+		})
 		return
 	}
 
+	logger.Infof("Successfully downloaded file %s to %s", fileName, filePath)
 	c.JSON(http.StatusOK, gin.H{
-		"success":     true,
-		"file_path":   filePath,
-		"remote_path": remotePath,
+		"success":    true,
+		"filePath":   filePath,
+		"remotePath": remotePath,
+		"fileName":   fileName,
 	})
 }
 
 func (s *APIServer) UploadFile(c *gin.Context) {
 	deviceId := c.Param("deviceId")
-	localPath := c.PostForm("local_path")
-	remotePath := c.PostForm("remote_path")
+	localPath := c.PostForm("localPath")
+	remotePath := c.PostForm("remotePath")
+
+	if deviceId == "" {
+		logger.Warn("UploadFile called with empty device ID")
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Device ID is required"})
+		return
+	}
 
 	if localPath == "" || remotePath == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "local_path and remote_path are required"})
+		logger.Warnf("UploadFile called with missing parameters - localPath: %s, remotePath: %s", localPath, remotePath)
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":      "localPath and remotePath are required",
+			"localPath":  localPath,
+			"remotePath": remotePath,
+		})
+		return
+	}
+
+	// Check if local file exists
+	if _, err := os.Stat(localPath); os.IsNotExist(err) {
+		logger.Warnf("Local file does not exist: %s", localPath)
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":     fmt.Sprintf("Local file not found: %s", localPath),
+			"localPath": localPath,
+		})
 		return
 	}
 
 	device, err := s.Node.GetDevice(deviceId)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Device not found"})
+		logger.Warnf("Device not found for upload: %s, error: %v", deviceId, err)
+		c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("Device not found: %s", deviceId)})
 		return
 	}
 
+	logger.Infof("Uploading file %s to device %s as %s", localPath, deviceId, remotePath)
 	uploadErr := file.Upload(s.Node, device.ID, localPath, remotePath)
 	if uploadErr != nil {
-		logger.Warn(uploadErr)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": uploadErr.Error()})
+		logger.Errorf("Failed to upload file %s to device %s: %v", localPath, deviceId, uploadErr)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":      fmt.Sprintf("Upload failed: %v", uploadErr),
+			"device_id":  deviceId,
+			"localPath":  localPath,
+			"remotePath": remotePath,
+		})
 		return
 	}
 
+	logger.Infof("Successfully uploaded file %s to device %s", localPath, deviceId)
 	c.JSON(http.StatusOK, gin.H{
-		"success":     true,
-		"local_path":  localPath,
-		"remote_path": remotePath,
+		"success":    true,
+		"localPath":  localPath,
+		"remotePath": remotePath,
+		"device_id":  deviceId,
 	})
 }
 
@@ -352,9 +418,9 @@ func (s *APIServer) PrepareCondaEnv(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"success":  true,
-		"env_path": envPath,
-		"env_name": req.Env,
+		"success": true,
+		"envPath": envPath,
+		"envName": req.Env,
 	})
 }
 
