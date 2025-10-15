@@ -1,10 +1,12 @@
 package compute
 
 import (
+	"archive/zip"
 	"bufio"
 	b64 "encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"stellar/core/conda"
@@ -79,6 +81,11 @@ type CondaPythonScriptExecution struct {
 	ScriptPath string
 }
 
+type CondaPythonWorkspaceExecution struct {
+	Env           string
+	WorkspacePath string
+}
+
 func (f *CondaPythonScriptExecution) Execute() (result string, err error) {
 	scriptPath := filepath.ToSlash(f.ScriptPath)
 	scriptPath = filepath.Join(file.DataDir, scriptPath)
@@ -100,6 +107,39 @@ func (f *CondaPythonScriptExecution) Execute() (result string, err error) {
 	scriptPath = newPath
 
 	if result, err = conda.RunCommand(conda.CondaPath, f.Env, "python", scriptPath); err != nil {
+		return
+	}
+
+	return
+}
+
+func (f *CondaPythonWorkspaceExecution) Execute() (result string, err error) {
+	workspacePath := filepath.ToSlash(f.WorkspacePath)
+	workspacePath = filepath.Join(file.DataDir, workspacePath)
+	defer os.Remove(workspacePath)
+
+	var tempDir string
+	tempDir, err = createTempDir()
+	if err != nil {
+		return
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Extract zip file to temp directory
+	err = extractZip(workspacePath, tempDir)
+	if err != nil {
+		return
+	}
+
+	// Look for main.py in the extracted directory
+	mainPyPath := filepath.Join(tempDir, "main.py")
+	if _, statErr := os.Stat(mainPyPath); os.IsNotExist(statErr) {
+		err = fmt.Errorf("main.py not found in workspace")
+		return
+	}
+
+	// Execute main.py from the workspace directory
+	if result, err = conda.RunCommand(conda.CondaPath, f.Env, "python", mainPyPath); err != nil {
 		return
 	}
 
@@ -131,6 +171,53 @@ func createTempDir() (tempDir string, err error) {
 	}
 
 	return
+}
+
+func extractZip(src, dest string) error {
+	r, err := zip.OpenReader(src)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+
+	for _, f := range r.File {
+		path := filepath.Join(dest, f.Name)
+
+		// Check for ZipSlip vulnerability
+		if !strings.HasPrefix(path, filepath.Clean(dest)+string(os.PathSeparator)) {
+			return fmt.Errorf("invalid file path: %s", f.Name)
+		}
+
+		if f.FileInfo().IsDir() {
+			os.MkdirAll(path, f.FileInfo().Mode())
+			continue
+		}
+
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			return err
+		}
+
+		outFile, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.FileInfo().Mode())
+		if err != nil {
+			return err
+		}
+
+		rc, err := f.Open()
+		if err != nil {
+			outFile.Close()
+			return err
+		}
+
+		_, err = io.Copy(outFile, rc)
+		outFile.Close()
+		rc.Close()
+
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func sendTempFile(n *node.Node, peer peer.ID, filePath string) (savePath string, err error) {
@@ -227,6 +314,38 @@ func doStellarCompute(s network.Stream) (err error) {
 		data = strings.Trim(data, "\n")
 
 		var payload CondaPythonScriptExecution
+		err = json.Unmarshal([]byte(data), &payload)
+		if err != nil {
+			return
+		}
+
+		var result string
+		result, err = payload.Execute()
+		if err != nil {
+			return
+		}
+
+		b64Result := b64.StdEncoding.EncodeToString([]byte(result))
+		_, err = s.Write([]byte(fmt.Sprintf("%v\n", b64Result)))
+		if err != nil {
+			return
+		}
+
+		return
+	case constant.StellarComputeExecuteWorkspace:
+		_, err = s.Write([]byte(fmt.Sprintf("%v\n", constant.StellarPong)))
+		if err != nil {
+			return
+		}
+
+		var data string
+		data, err = buf.ReadString('\n')
+		if err != nil {
+			return
+		}
+		data = strings.Trim(data, "\n")
+
+		var payload CondaPythonWorkspaceExecution
 		err = json.Unmarshal([]byte(data), &payload)
 		if err != nil {
 			return
@@ -351,6 +470,66 @@ func ExecuteCondaPythonScript(n *node.Node, peer peer.ID, form CondaPythonScript
 	buf := bufio.NewReader(s)
 
 	_, err = s.Write([]byte(fmt.Sprintf("%v\n", constant.StellarComputeExecuteScript)))
+	if err != nil {
+		return
+	}
+
+	data, err := buf.ReadString('\n')
+	if err != nil {
+		return
+	}
+	data = strings.Trim(data, "\n")
+	if data == constant.StellarEchoUnknownCommand {
+		err = fmt.Errorf("compute unknown command")
+		return
+	}
+	if data != constant.StellarPong {
+		err = fmt.Errorf("compute get not receiving pong ack")
+		return
+	}
+
+	jsonData, jsonErr := json.Marshal(form)
+	if jsonErr != nil {
+		err = jsonErr
+		return
+	}
+
+	_, err = s.Write([]byte(fmt.Sprintf("%v\n", string(jsonData))))
+	if err != nil {
+		return
+	}
+
+	b64Result, err := buf.ReadString('\n')
+	if err != nil {
+		return
+	}
+
+	b64ResultDec, err := b64.StdEncoding.DecodeString(b64Result)
+	if err != nil {
+		return
+	}
+	result = string(b64ResultDec)
+
+	return
+}
+
+func ExecuteCondaPythonWorkspace(n *node.Node, peer peer.ID, form CondaPythonWorkspaceExecution) (result string, err error) {
+	workspacePath, err := sendTempFile(n, peer, form.WorkspacePath)
+	if err != nil {
+		return
+	}
+	form.WorkspacePath = workspacePath
+	logger.Infof("execute conda python workspace file %s sent", form.WorkspacePath)
+
+	s, err := n.Host.NewStream(n.CTX, peer, constant.StellarComputeProtocol)
+	if err != nil {
+		return
+	}
+	defer s.Close()
+
+	buf := bufio.NewReader(s)
+
+	_, err = s.Write([]byte(fmt.Sprintf("%v\n", constant.StellarComputeExecuteWorkspace)))
 	if err != nil {
 		return
 	}

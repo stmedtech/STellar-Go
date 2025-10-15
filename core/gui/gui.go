@@ -490,7 +490,72 @@ func (app *GUIApp) initDevices() fyne.CanvasObject {
 		w.Show()
 	})
 
-	deviceControls := container.NewHBox(filesTree, sendFile, prepareCondaPython, executeCondaPythonScript)
+	executeCondaPythonWorkspace := widget.NewButton("Execute Python Workspace", func() {
+		deviceId, err := app.selectedDeviceId.Get()
+		if err != nil {
+			return
+		}
+		if deviceId == "" {
+			return
+		}
+
+		device, err := app.node.GetDevice(deviceId)
+		if err != nil {
+			app.showErr(err)
+			return
+		}
+
+		w := app.a.NewWindow(fmt.Sprintf("Execute Python Workspace with device %v", deviceId))
+		w.Resize(fyne.NewSize(800, 600))
+
+		envs, err := compute.ListCondaPythonEnvs(app.node, device.ID)
+		if err != nil {
+			app.showErr(err)
+			return
+		}
+		options := slices.Sorted(maps.Keys(envs))
+		envName := widget.NewRadioGroup(options, func(value string) {})
+		if len(options) > 0 {
+			envName.Selected = options[0]
+		}
+
+		form := &widget.Form{
+			Items: []*widget.FormItem{
+				{Text: "Select Environment", Widget: envName},
+			},
+			OnSubmit: func() {
+				fd := dialog.NewFileOpen(func(reader fyne.URIReadCloser, err error) {
+					if err != nil {
+						app.showErrWithWindow(err, w)
+						return
+					}
+					if reader == nil {
+						return
+					}
+
+					fpath := reader.URI().Path()
+					form := compute.CondaPythonWorkspaceExecution{
+						Env:           envName.Selected,
+						WorkspacePath: fpath,
+					}
+					result, envErr := compute.ExecuteCondaPythonWorkspace(app.node, device.ID, form)
+					if envErr != nil {
+						app.showErrWithWindow(envErr, w)
+						return
+					}
+
+					dialog.ShowInformation("Python Workspace Execution", result, w)
+				}, w)
+				fd.SetFilter(storage.NewExtensionFileFilter([]string{".zip"}))
+				fd.Show()
+			},
+		}
+
+		w.SetContent(form)
+		w.Show()
+	})
+
+	deviceControls := container.NewHBox(filesTree, sendFile, prepareCondaPython, executeCondaPythonScript, executeCondaPythonWorkspace)
 
 	split := container.NewHSplit(content, container.NewVBox(contentText, deviceControls))
 	split.Offset = 0.2

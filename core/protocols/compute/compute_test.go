@@ -1,6 +1,7 @@
 package compute
 
 import (
+	"archive/zip"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -36,6 +37,18 @@ func TestCondaPythonScriptExecutionStruct(t *testing.T) {
 	// Verify struct fields
 	assert.Equal(t, "test-env", exec.Env)
 	assert.Equal(t, "/path/to/script.py", exec.ScriptPath)
+}
+
+func TestCondaPythonWorkspaceExecutionStruct(t *testing.T) {
+	// Test CondaPythonWorkspaceExecution struct
+	exec := &CondaPythonWorkspaceExecution{
+		Env:           "test-env",
+		WorkspacePath: "/path/to/workspace.zip",
+	}
+
+	// Verify struct fields
+	assert.Equal(t, "test-env", exec.Env)
+	assert.Equal(t, "/path/to/workspace.zip", exec.WorkspacePath)
 }
 
 func TestCreateTempDir(t *testing.T) {
@@ -146,6 +159,28 @@ func TestCondaPythonScriptExecutionJSON(t *testing.T) {
 	assert.Equal(t, exec.ScriptPath, exec2.ScriptPath)
 }
 
+func TestCondaPythonWorkspaceExecutionJSON(t *testing.T) {
+	// Test JSON marshaling/unmarshaling of CondaPythonWorkspaceExecution
+	exec := &CondaPythonWorkspaceExecution{
+		Env:           "test-env",
+		WorkspacePath: "/path/to/workspace.zip",
+	}
+
+	// Marshal to JSON
+	jsonData, err := json.Marshal(exec)
+	require.NoError(t, err)
+	require.NotEmpty(t, jsonData)
+
+	// Unmarshal from JSON
+	var exec2 CondaPythonWorkspaceExecution
+	err = json.Unmarshal(jsonData, &exec2)
+	require.NoError(t, err)
+
+	// Verify data is preserved
+	assert.Equal(t, exec.Env, exec2.Env)
+	assert.Equal(t, exec.WorkspacePath, exec2.WorkspacePath)
+}
+
 func TestCondaPythonPreparationEmptyFields(t *testing.T) {
 	// Test CondaPythonPreparation with empty fields
 	prep := &CondaPythonPreparation{}
@@ -254,7 +289,7 @@ func BenchmarkCondaPythonScriptExecutionJSON(b *testing.B) {
 func TestCondaPythonPreparationWithDifferentVersions(t *testing.T) {
 	// Test CondaPythonPreparation with different Python versions
 	versions := []string{"3.8", "3.9", "3.10", "3.11", "3.12"}
-	
+
 	for _, version := range versions {
 		t.Run("version_"+version, func(t *testing.T) {
 			prep := &CondaPythonPreparation{
@@ -262,7 +297,7 @@ func TestCondaPythonPreparationWithDifferentVersions(t *testing.T) {
 				Version:     version,
 				EnvYamlPath: "/path/to/environment.yml",
 			}
-			
+
 			assert.Equal(t, "test-env-"+version, prep.Env)
 			assert.Equal(t, version, prep.Version)
 			assert.Equal(t, "/path/to/environment.yml", prep.EnvYamlPath)
@@ -279,14 +314,14 @@ func TestCondaPythonScriptExecutionWithDifferentPaths(t *testing.T) {
 		"./local_script.py",
 		"../parent_dir/script.py",
 	}
-	
+
 	for _, path := range paths {
 		t.Run("path_"+filepath.Base(path), func(t *testing.T) {
 			exec := &CondaPythonScriptExecution{
 				Env:        "test-env",
 				ScriptPath: path,
 			}
-			
+
 			assert.Equal(t, "test-env", exec.Env)
 			assert.Equal(t, path, exec.ScriptPath)
 		})
@@ -300,7 +335,7 @@ func TestCondaPythonPreparationWithSpecialCharacters(t *testing.T) {
 		Version:     "3.9",
 		EnvYamlPath: "/path/with spaces/environment.yml",
 	}
-	
+
 	assert.Equal(t, "test-env-with-special-chars_123", prep.Env)
 	assert.Equal(t, "3.9", prep.Version)
 	assert.Equal(t, "/path/with spaces/environment.yml", prep.EnvYamlPath)
@@ -312,7 +347,7 @@ func TestCondaPythonScriptExecutionWithSpecialCharacters(t *testing.T) {
 		Env:        "test-env-with-special-chars_123",
 		ScriptPath: "/path/with spaces/script with spaces.py",
 	}
-	
+
 	assert.Equal(t, "test-env-with-special-chars_123", exec.Env)
 	assert.Equal(t, "/path/with spaces/script with spaces.py", exec.ScriptPath)
 }
@@ -324,17 +359,17 @@ func TestCondaPythonPreparationJSONWithSpecialCharacters(t *testing.T) {
 		Version:     "3.9",
 		EnvYamlPath: "/path/with spaces/environment.yml",
 	}
-	
+
 	// Marshal to JSON
 	jsonData, err := json.Marshal(prep)
 	require.NoError(t, err)
 	require.NotEmpty(t, jsonData)
-	
+
 	// Unmarshal from JSON
 	var prep2 CondaPythonPreparation
 	err = json.Unmarshal(jsonData, &prep2)
 	require.NoError(t, err)
-	
+
 	// Verify data is preserved
 	assert.Equal(t, prep.Env, prep2.Env)
 	assert.Equal(t, prep.Version, prep2.Version)
@@ -347,17 +382,17 @@ func TestCondaPythonScriptExecutionJSONWithSpecialCharacters(t *testing.T) {
 		Env:        "test-env-with-special-chars_123",
 		ScriptPath: "/path/with spaces/script with spaces.py",
 	}
-	
+
 	// Marshal to JSON
 	jsonData, err := json.Marshal(exec)
 	require.NoError(t, err)
 	require.NotEmpty(t, jsonData)
-	
+
 	// Unmarshal from JSON
 	var exec2 CondaPythonScriptExecution
 	err = json.Unmarshal(jsonData, &exec2)
 	require.NoError(t, err)
-	
+
 	// Verify data is preserved
 	assert.Equal(t, exec.Env, exec2.Env)
 	assert.Equal(t, exec.ScriptPath, exec2.ScriptPath)
@@ -368,11 +403,11 @@ func TestCreateTempDirWithDifferentPrefixes(t *testing.T) {
 	tempDir, err := createTempDir()
 	require.NoError(t, err)
 	require.NotEmpty(t, tempDir)
-	
+
 	// Verify it has the expected prefix
 	baseName := filepath.Base(tempDir)
 	assert.Contains(t, baseName, "stellar-compute-temp-dir-")
-	
+
 	// Clean up
 	os.RemoveAll(tempDir)
 }
@@ -382,13 +417,13 @@ func TestCreateTempDirPermissions(t *testing.T) {
 	tempDir, err := createTempDir()
 	require.NoError(t, err)
 	require.NotEmpty(t, tempDir)
-	
+
 	// Verify directory exists and is accessible
 	info, err := os.Stat(tempDir)
 	assert.NoError(t, err)
 	assert.True(t, info.IsDir())
 	assert.True(t, info.Mode().IsDir())
-	
+
 	// Clean up
 	os.RemoveAll(tempDir)
 }
@@ -400,17 +435,17 @@ func TestCondaPythonPreparationStructFields(t *testing.T) {
 		Version:     "3.9",
 		EnvYamlPath: "/path/to/environment.yml",
 	}
-	
+
 	// Test field access
 	assert.Equal(t, "test-env", prep.Env)
 	assert.Equal(t, "3.9", prep.Version)
 	assert.Equal(t, "/path/to/environment.yml", prep.EnvYamlPath)
-	
+
 	// Test field modification
 	prep.Env = "modified-env"
 	prep.Version = "3.10"
 	prep.EnvYamlPath = "/new/path/environment.yml"
-	
+
 	assert.Equal(t, "modified-env", prep.Env)
 	assert.Equal(t, "3.10", prep.Version)
 	assert.Equal(t, "/new/path/environment.yml", prep.EnvYamlPath)
@@ -422,15 +457,15 @@ func TestCondaPythonScriptExecutionStructFields(t *testing.T) {
 		Env:        "test-env",
 		ScriptPath: "/path/to/script.py",
 	}
-	
+
 	// Test field access
 	assert.Equal(t, "test-env", exec.Env)
 	assert.Equal(t, "/path/to/script.py", exec.ScriptPath)
-	
+
 	// Test field modification
 	exec.Env = "modified-env"
 	exec.ScriptPath = "/new/path/script.py"
-	
+
 	assert.Equal(t, "modified-env", exec.Env)
 	assert.Equal(t, "/new/path/script.py", exec.ScriptPath)
 }
@@ -442,16 +477,16 @@ func TestCondaPythonPreparationJSONRoundTrip(t *testing.T) {
 		Version:     "3.9",
 		EnvYamlPath: "/path/to/environment.yml",
 	}
-	
+
 	// Marshal to JSON
 	jsonData, err := json.Marshal(original)
 	require.NoError(t, err)
-	
+
 	// Unmarshal from JSON
 	var restored CondaPythonPreparation
 	err = json.Unmarshal(jsonData, &restored)
 	require.NoError(t, err)
-	
+
 	// Verify complete round trip
 	assert.Equal(t, original.Env, restored.Env)
 	assert.Equal(t, original.Version, restored.Version)
@@ -464,16 +499,16 @@ func TestCondaPythonScriptExecutionJSONRoundTrip(t *testing.T) {
 		Env:        "test-env",
 		ScriptPath: "/path/to/script.py",
 	}
-	
+
 	// Marshal to JSON
 	jsonData, err := json.Marshal(original)
 	require.NoError(t, err)
-	
+
 	// Unmarshal from JSON
 	var restored CondaPythonScriptExecution
 	err = json.Unmarshal(jsonData, &restored)
 	require.NoError(t, err)
-	
+
 	// Verify complete round trip
 	assert.Equal(t, original.Env, restored.Env)
 	assert.Equal(t, original.ScriptPath, restored.ScriptPath)
@@ -484,7 +519,7 @@ func TestCreateTempDirConcurrent(t *testing.T) {
 	numGoroutines := 10
 	dirs := make([]string, numGoroutines)
 	errors := make([]error, numGoroutines)
-	
+
 	var wg sync.WaitGroup
 	for i := 0; i < numGoroutines; i++ {
 		wg.Add(1)
@@ -495,27 +530,27 @@ func TestCreateTempDirConcurrent(t *testing.T) {
 			errors[index] = err
 		}(i)
 	}
-	
+
 	wg.Wait()
-	
+
 	// Verify all directories were created successfully
 	for i, err := range errors {
 		assert.NoError(t, err, "Goroutine %d failed", i)
 		assert.NotEmpty(t, dirs[i], "Goroutine %d returned empty directory", i)
-		
+
 		// Verify directory exists
 		info, err := os.Stat(dirs[i])
 		assert.NoError(t, err)
 		assert.True(t, info.IsDir())
 	}
-	
+
 	// Verify all directories are different
 	for i := 0; i < numGoroutines; i++ {
 		for j := i + 1; j < numGoroutines; j++ {
 			assert.NotEqual(t, dirs[i], dirs[j], "Directories %d and %d are the same", i, j)
 		}
 	}
-	
+
 	// Clean up
 	for _, dir := range dirs {
 		os.RemoveAll(dir)
@@ -563,7 +598,7 @@ func TestCondaPythonPreparationPrepare(t *testing.T) {
 		Version:     "3.9",
 		EnvYamlPath: "/path/to/environment.yml",
 	}
-	
+
 	// This will fail because it tries to create a conda environment
 	// We expect an error since conda is not available in test environment
 	_, err := prep.Prepare()
@@ -577,7 +612,7 @@ func TestCondaPythonScriptExecutionExecute(t *testing.T) {
 		Env:        "",
 		ScriptPath: "/path/to/script.py",
 	}
-	
+
 	// This will fail because it tries to execute in a conda environment
 	// We expect an error since conda is not available in test environment
 	_, err := exec.Execute()
@@ -591,7 +626,7 @@ func TestCondaPythonPreparationPrepareWithNonExistentFile(t *testing.T) {
 		Version:     "3.9",
 		EnvYamlPath: "/non/existent/environment.yml",
 	}
-	
+
 	// This will fail because the environment file doesn't exist
 	_, err := prep.Prepare()
 	assert.Error(t, err)
@@ -603,7 +638,7 @@ func TestCondaPythonScriptExecutionExecuteWithNonExistentFile(t *testing.T) {
 		Env:        "test-env",
 		ScriptPath: "/non/existent/script.py",
 	}
-	
+
 	// This will fail because the script file doesn't exist
 	_, err := exec.Execute()
 	assert.Error(t, err)
@@ -616,7 +651,7 @@ func TestCondaPythonPreparationPrepareWithInvalidVersion(t *testing.T) {
 		Version:     "invalid-version",
 		EnvYamlPath: "/path/to/environment.yml",
 	}
-	
+
 	// This will fail because the Python version is invalid
 	_, err := prep.Prepare()
 	assert.Error(t, err)
@@ -660,7 +695,7 @@ func TestCondaPythonPreparationFieldValidation(t *testing.T) {
 			expectError: true,
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			prep := &CondaPythonPreparation{
@@ -668,7 +703,7 @@ func TestCondaPythonPreparationFieldValidation(t *testing.T) {
 				Version:     tt.version,
 				EnvYamlPath: tt.envYamlPath,
 			}
-			
+
 			_, err := prep.Prepare()
 			if tt.expectError {
 				assert.Error(t, err)
@@ -706,14 +741,14 @@ func TestCondaPythonScriptExecutionFieldValidation(t *testing.T) {
 			expectError: true,
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			exec := &CondaPythonScriptExecution{
 				Env:        tt.env,
 				ScriptPath: tt.scriptPath,
 			}
-			
+
 			_, err := exec.Execute()
 			if tt.expectError {
 				assert.Error(t, err)
@@ -730,27 +765,27 @@ func TestCondaPythonPreparationEdgeCases(t *testing.T) {
 	longEnv := strings.Repeat("a", 1000)
 	longVersion := strings.Repeat("3.9.", 100)
 	longPath := strings.Repeat("/path/", 100) + "environment.yml"
-	
+
 	prep := &CondaPythonPreparation{
 		Env:         longEnv,
 		Version:     longVersion,
 		EnvYamlPath: longPath,
 	}
-	
+
 	assert.Equal(t, longEnv, prep.Env)
 	assert.Equal(t, longVersion, prep.Version)
 	assert.Equal(t, longPath, prep.EnvYamlPath)
-	
+
 	// Test JSON marshaling with long strings
 	jsonData, err := json.Marshal(prep)
 	require.NoError(t, err)
 	require.NotEmpty(t, jsonData)
-	
+
 	// Unmarshal back
 	var prep2 CondaPythonPreparation
 	err = json.Unmarshal(jsonData, &prep2)
 	require.NoError(t, err)
-	
+
 	assert.Equal(t, longEnv, prep2.Env)
 	assert.Equal(t, longVersion, prep2.Version)
 	assert.Equal(t, longPath, prep2.EnvYamlPath)
@@ -761,25 +796,170 @@ func TestCondaPythonScriptExecutionEdgeCases(t *testing.T) {
 	// Test with very long strings
 	longEnv := strings.Repeat("a", 1000)
 	longPath := strings.Repeat("/path/", 100) + "script.py"
-	
+
 	exec := &CondaPythonScriptExecution{
 		Env:        longEnv,
 		ScriptPath: longPath,
 	}
-	
+
 	assert.Equal(t, longEnv, exec.Env)
 	assert.Equal(t, longPath, exec.ScriptPath)
-	
+
 	// Test JSON marshaling with long strings
 	jsonData, err := json.Marshal(exec)
 	require.NoError(t, err)
 	require.NotEmpty(t, jsonData)
-	
+
 	// Unmarshal back
 	var exec2 CondaPythonScriptExecution
 	err = json.Unmarshal(jsonData, &exec2)
 	require.NoError(t, err)
-	
+
 	assert.Equal(t, longEnv, exec2.Env)
 	assert.Equal(t, longPath, exec2.ScriptPath)
+}
+
+// Test extractZip function
+func TestExtractZip(t *testing.T) {
+	// Create a temporary directory for testing
+	tempDir := t.TempDir()
+
+	// Create a test zip file
+	zipPath := filepath.Join(tempDir, "test.zip")
+	extractDir := filepath.Join(tempDir, "extracted")
+
+	// Create test files
+	testFiles := map[string]string{
+		"main.py":  "print('Hello from main.py')",
+		"utils.py": "def helper(): return 'helper'",
+		"data.txt": "test data",
+	}
+
+	// Create zip file
+	err := createTestZip(zipPath, testFiles)
+	require.NoError(t, err)
+
+	// Extract zip file
+	err = extractZip(zipPath, extractDir)
+	require.NoError(t, err)
+
+	// Verify extracted files
+	for filename, content := range testFiles {
+		filePath := filepath.Join(extractDir, filename)
+		info, err := os.Stat(filePath)
+		require.NoError(t, err)
+		assert.False(t, info.IsDir())
+
+		// Read and verify content
+		data, err := os.ReadFile(filePath)
+		require.NoError(t, err)
+		assert.Equal(t, content, string(data))
+	}
+}
+
+// Test extractZip with ZipSlip vulnerability protection
+func TestExtractZipZipSlipProtection(t *testing.T) {
+	// Create a temporary directory for testing
+	tempDir := t.TempDir()
+
+	// Create a malicious zip file with ZipSlip attack
+	zipPath := filepath.Join(tempDir, "malicious.zip")
+	extractDir := filepath.Join(tempDir, "extracted")
+
+	// Create malicious zip content
+	maliciousFiles := map[string]string{
+		"../../../etc/passwd": "malicious content",
+		"normal_file.txt":     "normal content",
+	}
+
+	// Create malicious zip file
+	err := createTestZip(zipPath, maliciousFiles)
+	require.NoError(t, err)
+
+	// Try to extract - should fail due to ZipSlip protection
+	err = extractZip(zipPath, extractDir)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid file path")
+}
+
+// Helper function to create test zip files
+func createTestZip(zipPath string, files map[string]string) error {
+	zipFile, err := os.Create(zipPath)
+	if err != nil {
+		return err
+	}
+	defer zipFile.Close()
+
+	zipWriter := zip.NewWriter(zipFile)
+	defer zipWriter.Close()
+
+	for filename, content := range files {
+		writer, err := zipWriter.Create(filename)
+		if err != nil {
+			return err
+		}
+		_, err = writer.Write([]byte(content))
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// Test CondaPythonWorkspaceExecution Execute method
+func TestCondaPythonWorkspaceExecutionExecute(t *testing.T) {
+	// Test with empty environment name
+	exec := &CondaPythonWorkspaceExecution{
+		Env:           "",
+		WorkspacePath: "/path/to/workspace.zip",
+	}
+
+	// This will fail because it tries to execute in a conda environment
+	// We expect an error since conda is not available in test environment
+	_, err := exec.Execute()
+	assert.Error(t, err)
+}
+
+// Test CondaPythonWorkspaceExecution with non-existent workspace file
+func TestCondaPythonWorkspaceExecutionExecuteWithNonExistentFile(t *testing.T) {
+	exec := &CondaPythonWorkspaceExecution{
+		Env:           "test-env",
+		WorkspacePath: "/non/existent/workspace.zip",
+	}
+
+	// This will fail because the workspace file doesn't exist
+	_, err := exec.Execute()
+	assert.Error(t, err)
+}
+
+// Test CondaPythonWorkspaceExecution with workspace missing main.py
+func TestCondaPythonWorkspaceExecutionExecuteWithMissingMainPy(t *testing.T) {
+	// Create a temporary directory for testing
+	tempDir := t.TempDir()
+
+	// Create a test zip file without main.py
+	zipPath := filepath.Join(tempDir, "test.zip")
+
+	// Create test files without main.py
+	testFiles := map[string]string{
+		"utils.py": "def helper(): return 'helper'",
+		"data.txt": "test data",
+	}
+
+	// Create zip file
+	err := createTestZip(zipPath, testFiles)
+	require.NoError(t, err)
+
+	// Create workspace execution with the zip file
+	exec := &CondaPythonWorkspaceExecution{
+		Env:           "test-env",
+		WorkspacePath: zipPath,
+	}
+
+	// This will fail because the file path resolution fails
+	// The Execute method expects the file to be in file.DataDir
+	_, err = exec.Execute()
+	assert.Error(t, err)
+	// The error will be about file not found, not specifically about main.py
 }

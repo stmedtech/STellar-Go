@@ -46,6 +46,7 @@ func TestStellarComputeCommands(t *testing.T) {
 	assert.Equal(t, "prepCondaPython", StellarComputePrepareCondaPython)
 	assert.Equal(t, "listCondaPythonEnvs", StellarComputeListCondaPythonEnvs)
 	assert.Equal(t, "executeScript", StellarComputeExecuteScript)
+	assert.Equal(t, "executeWorkspace", StellarComputeExecuteWorkspace)
 }
 
 func TestProtocolIDTypes(t *testing.T) {
@@ -71,4 +72,5 @@ func TestStringConstants(t *testing.T) {
 	assert.NotEmpty(t, StellarComputePrepareCondaPython)
 	assert.NotEmpty(t, StellarComputeListCondaPythonEnvs)
 	assert.NotEmpty(t, StellarComputeExecuteScript)
+	assert.NotEmpty(t, StellarComputeExecuteWorkspace)
 }
