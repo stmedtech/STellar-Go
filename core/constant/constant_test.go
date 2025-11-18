@@ -36,7 +36,7 @@ func TestStellarPath(t *testing.T) {
 		expectedBase = homeDir
 	}
 
-	expectedPath := filepath.Join(expectedBase, "Stellar")
+	expectedPath := filepath.Join(expectedBase, "stellar")
 	assert.Equal(t, expectedPath, path)
 }
 
@@ -104,8 +104,8 @@ func TestStellarPathContainsStellar(t *testing.T) {
 	path, err := StellarPath()
 	require.NoError(t, err)
 
-	// Verify the path contains "Stellar"
-	assert.Contains(t, path, "Stellar")
+	// Verify the path contains "stellar"
+	assert.Contains(t, path, "stellar")
 }
 
 func BenchmarkStellarPath(b *testing.B) {

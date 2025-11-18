@@ -452,10 +452,52 @@ func (s *APIServer) ExecuteScript(c *gin.Context) {
 	result, execErr := compute.ExecuteCondaPythonScript(s.Node, device.ID, execution)
 	if execErr != nil {
 		logger.Warn(execErr)
+		logger.Warn(result)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": execErr.Error()})
 		return
 	}
 
+	logger.Infof("Successfully executed script %s on device %s", req.ScriptPath, deviceId)
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"result":  result,
+		"env":     req.Env,
+	})
+}
+
+func (s *APIServer) ExecuteWorkspace(c *gin.Context) {
+	deviceId := c.Param("deviceId")
+
+	type ExecuteRequest struct {
+		Env           string `json:"env" binding:"required"`
+		WorkspacePath string `json:"workspace_path" binding:"required"`
+	}
+
+	var req ExecuteRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	device, err := s.Node.GetDevice(deviceId)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Device not found"})
+		return
+	}
+
+	execution := compute.CondaPythonWorkspaceExecution{
+		Env:           req.Env,
+		WorkspacePath: req.WorkspacePath,
+	}
+
+	result, execErr := compute.ExecuteCondaPythonWorkspace(s.Node, device.ID, execution)
+	if execErr != nil {
+		logger.Warn(execErr)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": execErr.Error()})
+		return
+	}
+
+	logger.Infof("Successfully executed workspace %s on device %s", req.WorkspacePath, deviceId)
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"result":  result,
@@ -551,6 +593,7 @@ func (s *APIServer) Start() {
 	server.GET("/devices/:deviceId/compute/envs", s.ListCondaEnvs)
 	server.POST("/devices/:deviceId/compute/prepare", s.PrepareCondaEnv)
 	server.POST("/devices/:deviceId/compute/execute", s.ExecuteScript)
+	server.POST("/devices/:deviceId/compute/execute-workspace", s.ExecuteWorkspace)
 
 	// Proxy protocol endpoints
 	server.POST("/proxy", s.CreateProxy)

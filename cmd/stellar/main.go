@@ -23,7 +23,7 @@ func main() {
 	}
 
 	if len(os.Args) < 2 {
-		fmt.Println("expected 'key', 'bootstrapper', 'node', 'gui' subcommands")
+		fmt.Println("expected 'key', 'bootstrapper', 'node', 'gui', 'conda' subcommands")
 		os.Exit(1)
 	}
 
@@ -36,6 +36,8 @@ func main() {
 		nodeCommand()
 	case "gui":
 		guiCommand()
+	case "conda":
+		condaCommand()
 	case "test":
 		testCommand()
 	default:

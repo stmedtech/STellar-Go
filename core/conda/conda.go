@@ -89,7 +89,7 @@ type saveOutput struct {
 
 func (so *saveOutput) Write(p []byte) (n int, err error) {
 	so.savedOutput = append(so.savedOutput, p...)
-	logger.Debug(string(p))
+	logger.Infof("conda output: %s", string(p))
 	return len(p), nil
 }
 

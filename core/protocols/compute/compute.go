@@ -86,6 +86,7 @@ type CondaPythonWorkspaceExecution struct {
 	WorkspacePath string
 }
 
+// TODO Refactor to std streaming
 func (f *CondaPythonScriptExecution) Execute() (result string, err error) {
 	scriptPath := filepath.ToSlash(f.ScriptPath)
 	scriptPath = filepath.Join(file.DataDir, scriptPath)
@@ -113,6 +114,7 @@ func (f *CondaPythonScriptExecution) Execute() (result string, err error) {
 	return
 }
 
+// TODO Refactor to std streaming
 func (f *CondaPythonWorkspaceExecution) Execute() (result string, err error) {
 	workspacePath := filepath.ToSlash(f.WorkspacePath)
 	workspacePath = filepath.Join(file.DataDir, workspacePath)
@@ -322,6 +324,7 @@ func doStellarCompute(s network.Stream) (err error) {
 		var result string
 		result, err = payload.Execute()
 		if err != nil {
+			// TODO No error report
 			return
 		}
 
