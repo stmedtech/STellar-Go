@@ -1,0 +1,100 @@
+version: '3.8'
+
+# Docker Compose workflow test for proxy functionality
+# This tests the proxy service integration between two nodes
+
+x-defaults: &defaults
+  build: .
+  volumes:
+    - ./bootstrappers.txt:/app/bootstrappers.txt
+    - ./data/test:/app/data
+
+services:
+  bootstrap:
+    build: .
+    command: bootstrapper -port 43210 -b64privkey ${BOOTSTRAP_KEY:-} -relay -debug
+    ports:
+      - "43210:43210"
+      - "5001:5001"
+    healthcheck:
+      test: ["CMD", "ls"]
+      start_period: 5s
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Node 1: Proxy client (will create proxy connections)
+  proxy_client:
+    <<: *defaults
+    command: node -reference_token client_token -api
+    ports:
+      - "1525:1524"  # API port
+    depends_on:
+      bootstrap:
+        condition: service_healthy
+    environment:
+      - DEVICE_REFERENCE_TOKEN=client_token
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:1524/health"]
+      start_period: 10s
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Node 2: Proxy server (will accept proxy connections)
+  proxy_server:
+    <<: *defaults
+    command: node -reference_token server_token -api
+    ports:
+      - "1526:1524"  # API port
+      - "8080:8080"  # Test HTTP server
+    depends_on:
+      bootstrap:
+        condition: service_healthy
+    environment:
+      - DEVICE_REFERENCE_TOKEN=server_token
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:1524/health"]
+      start_period: 10s
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Test HTTP server that proxy will connect to
+  test_server:
+    image: nginx:alpine
+    ports:
+      - "8080:80"
+    volumes:
+      - ./tests/proxy/test-server.html:/usr/share/nginx/html/index.html:ro
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/"]
+      start_period: 5s
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Test runner that validates proxy functionality
+  proxy_test_runner:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    command: >
+      sh -c "
+        echo 'Waiting for services to be ready...' &&
+        sleep 30 &&
+        echo 'Running proxy integration tests...' &&
+        go test -v ./p2p/protocols/proxy -run TestProxyServiceIntegration -timeout 5m
+      "
+    depends_on:
+      proxy_client:
+        condition: service_healthy
+      proxy_server:
+        condition: service_healthy
+      test_server:
+        condition: service_healthy
+    volumes:
+      - .:/app
+    environment:
+      - CGO_ENABLED=0
+
