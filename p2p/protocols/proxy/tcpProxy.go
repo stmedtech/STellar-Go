@@ -4,18 +4,17 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"sync"
 	"stellar/p2p/constant"
 	"stellar/p2p/node"
 	"stellar/p2p/protocols/proxy/service"
+	"sync"
 	"time"
 
-	golog "github.com/ipfs/go-log/v2"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
-var logger = golog.Logger("stellar-p2p-protocols-proxy")
+// logger is declared in httpProxy.go
 
 // tcpStreamHandler handles incoming libp2p streams for proxy server
 func tcpStreamHandler(stream network.Stream) {
@@ -38,15 +37,19 @@ func tcpStreamHandler(stream network.Stream) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	serveDone := make(chan error, 1)
 	go func() {
-		if err := srv.Serve(ctx); err != nil {
-			logger.Debugf("Proxy server stopped: %v", err)
-		}
+		serveDone <- srv.Serve(ctx)
 	}()
 
-	// Keep handler alive until stream closes
-	<-stream.Context().Done()
-	srv.Close()
+	// Wait for stream to close or serve to finish
+	select {
+	case <-serveDone:
+		// Server finished (likely stream closed)
+		srv.Close()
+	case <-ctx.Done():
+		srv.Close()
+	}
 }
 
 type TcpProxyService struct {
@@ -143,7 +146,6 @@ func (p *TcpProxyService) Serve() error {
 		logger.Warnf("Failed to open local port to listen: %v", err)
 		return err
 	}
-	defer listener.Close()
 
 	logger.Infof("Proxy listening on %v for %v", laddr, p.DestAddr)
 
@@ -212,7 +214,8 @@ func (p *TcpProxyService) acceptConnection(conn *net.TCPConn, id string, laddr *
 	proxyID := fmt.Sprintf("%s:%d", id, p.Port)
 
 	// Open proxy connection using the service client
-	proxy, err := client.OpenWithLocalConn(proxyID, p.DestAddr, "tcp", conn)
+	// OpenWithLocalConn starts bidirectional forwarding and handles the connection lifecycle
+	_, err = client.OpenWithLocalConn(proxyID, p.DestAddr, "tcp", conn)
 	if err != nil {
 		logger.Errorf("Failed to open proxy: %v", err)
 		return
@@ -220,7 +223,7 @@ func (p *TcpProxyService) acceptConnection(conn *net.TCPConn, id string, laddr *
 
 	logger.Debugf("Proxy connection established: %s -> %s", proxyID, p.DestAddr)
 
-	// Wait for context cancellation (connection will be closed by forwarding goroutines)
+	// The forwarding goroutines in OpenWithLocalConn will handle the connection lifecycle
+	// Wait for context cancellation (service shutdown) or connection close
 	<-p.ctx.Done()
-	proxy.Close()
 }
