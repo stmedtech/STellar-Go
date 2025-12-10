@@ -168,8 +168,7 @@ func testProxyFunctionality(t *testing.T, node1, node2 *node.Node, proxy1, proxy
 
 	// Create proxy from node1 to node2
 	proxyPort := uint64(8081)
-	proxyService := proxy.NewTcpProxyService(node1, proxyPort, node2.ID(), serverAddr)
-	proxyService.Bind()
+	proxyService := proxy.NewProxyService(node1, proxyPort, node2.ID(), serverAddr)
 
 	// Start proxy service
 	go func() {

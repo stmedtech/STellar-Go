@@ -6,16 +6,14 @@ import (
 	"testing"
 
 	"github.com/libp2p/go-libp2p/core/peer"
-	ma "github.com/multiformats/go-multiaddr"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func TestProxyManagerStruct(t *testing.T) {
 	// Test ProxyManager struct creation
 	manager := &ProxyManager{
 		node:    nil,
-		proxies: make([]*TcpProxyService, 0),
+		proxies: make([]*ProxyService, 0),
 	}
 
 	// Verify struct fields
@@ -26,7 +24,7 @@ func TestProxyManagerStruct(t *testing.T) {
 
 func TestProxyManagerStructWithProxies(t *testing.T) {
 	// Test ProxyManager struct with proxies
-	proxies := []*TcpProxyService{
+	proxies := []*ProxyService{
 		{
 			node:     nil,
 			Port:     8080,
@@ -53,12 +51,12 @@ func TestProxyManagerStructWithProxies(t *testing.T) {
 	assert.Equal(t, uint64(8081), manager.proxies[1].Port)
 }
 
-func TestTcpProxyServiceStruct(t *testing.T) {
-	// Test TcpProxyService struct creation
+func TestProxyServiceStruct(t *testing.T) {
+	// Test ProxyService struct creation
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	proxy := &TcpProxyService{
+	proxy := &ProxyService{
 		node:     nil,
 		Port:     8080,
 		Dest:     "test-peer",
@@ -76,8 +74,8 @@ func TestTcpProxyServiceStruct(t *testing.T) {
 	assert.NotNil(t, proxy.cancel)
 }
 
-func TestTcpProxyServiceStructWithDifferentPorts(t *testing.T) {
-	// Test TcpProxyService struct with different ports
+func TestProxyServiceStructWithDifferentPorts(t *testing.T) {
+	// Test ProxyService struct with different ports
 	ports := []uint64{8080, 8081, 8082, 8083, 8084}
 
 	for _, port := range ports {
@@ -85,7 +83,7 @@ func TestTcpProxyServiceStructWithDifferentPorts(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 
-			proxy := &TcpProxyService{
+			proxy := &ProxyService{
 				node:     nil,
 				Port:     port,
 				Dest:     "test-peer",
@@ -99,8 +97,8 @@ func TestTcpProxyServiceStructWithDifferentPorts(t *testing.T) {
 	}
 }
 
-func TestTcpProxyServiceStructWithDifferentDestinations(t *testing.T) {
-	// Test TcpProxyService struct with different destinations
+func TestProxyServiceStructWithDifferentDestinations(t *testing.T) {
+	// Test ProxyService struct with different destinations
 	destinations := []struct {
 		dest     string
 		destAddr string
@@ -116,7 +114,7 @@ func TestTcpProxyServiceStructWithDifferentDestinations(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 
-			proxy := &TcpProxyService{
+			proxy := &ProxyService{
 				node:     nil,
 				Port:     8080,
 				Dest:     peer.ID(dest.dest),
@@ -131,11 +129,11 @@ func TestTcpProxyServiceStructWithDifferentDestinations(t *testing.T) {
 	}
 }
 
-func TestTcpProxyServiceDone(t *testing.T) {
-	// Test TcpProxyService Done method
+func TestProxyServiceDone(t *testing.T) {
+	// Test ProxyService Done method
 	ctx, cancel := context.WithCancel(context.Background())
 
-	proxy := &TcpProxyService{
+	proxy := &ProxyService{
 		node:     nil,
 		Port:     8080,
 		Dest:     "test-peer",
@@ -154,11 +152,11 @@ func TestTcpProxyServiceDone(t *testing.T) {
 	assert.True(t, proxy.Done())
 }
 
-func TestTcpProxyServiceClose(t *testing.T) {
-	// Test TcpProxyService Close method
+func TestProxyServiceClose(t *testing.T) {
+	// Test ProxyService Close method
 	ctx, cancel := context.WithCancel(context.Background())
 
-	proxy := &TcpProxyService{
+	proxy := &ProxyService{
 		node:     nil,
 		Port:     8080,
 		Dest:     "test-peer",
@@ -177,39 +175,11 @@ func TestTcpProxyServiceClose(t *testing.T) {
 	assert.True(t, proxy.Done())
 }
 
-func TestProxyServiceStruct(t *testing.T) {
-	// Test ProxyService struct creation
-	service := &ProxyService{
-		host:      nil,
-		dest:      "test-peer",
-		proxyAddr: nil,
-	}
-
-	// Verify struct fields
-	assert.Nil(t, service.host)
-	assert.Equal(t, peer.ID("test-peer"), service.dest)
-	assert.Nil(t, service.proxyAddr)
-}
-
-func TestProxyServiceStructWithFields(t *testing.T) {
-	// Test ProxyService struct with all fields
-	service := &ProxyService{
-		host:      nil,
-		dest:      "test-peer",
-		proxyAddr: nil,
-	}
-
-	// Verify struct can be created with fields
-	assert.Nil(t, service.host)
-	assert.Equal(t, peer.ID("test-peer"), service.dest)
-	assert.Nil(t, service.proxyAddr)
-}
-
 func TestProxyManagerProxiesMethod(t *testing.T) {
 	// Test ProxyManager Proxies method
 	manager := &ProxyManager{
 		node:    nil,
-		proxies: make([]*TcpProxyService, 0),
+		proxies: make([]*ProxyService, 0),
 	}
 
 	// Initially no proxies
@@ -222,7 +192,7 @@ func TestProxyManagerProxiesMethodWithActiveProxies(t *testing.T) {
 	ctx1, cancel1 := context.WithCancel(context.Background())
 	ctx2, cancel2 := context.WithCancel(context.Background())
 
-	proxy1 := &TcpProxyService{
+	proxy1 := &ProxyService{
 		node:     nil,
 		Port:     8080,
 		Dest:     "peer1",
@@ -231,7 +201,7 @@ func TestProxyManagerProxiesMethodWithActiveProxies(t *testing.T) {
 		cancel:   cancel1,
 	}
 
-	proxy2 := &TcpProxyService{
+	proxy2 := &ProxyService{
 		node:     nil,
 		Port:     8081,
 		Dest:     "peer2",
@@ -242,7 +212,7 @@ func TestProxyManagerProxiesMethodWithActiveProxies(t *testing.T) {
 
 	manager := &ProxyManager{
 		node:    nil,
-		proxies: []*TcpProxyService{proxy1, proxy2},
+		proxies: []*ProxyService{proxy1, proxy2},
 	}
 
 	// Both proxies should be active
@@ -265,7 +235,7 @@ func TestProxyManagerCloseMethod(t *testing.T) {
 	// Test ProxyManager Close method
 	ctx, cancel := context.WithCancel(context.Background())
 
-	proxy := &TcpProxyService{
+	proxy := &ProxyService{
 		node:     nil,
 		Port:     8080,
 		Dest:     "test-peer",
@@ -276,7 +246,7 @@ func TestProxyManagerCloseMethod(t *testing.T) {
 
 	manager := &ProxyManager{
 		node:    nil,
-		proxies: []*TcpProxyService{proxy},
+		proxies: []*ProxyService{proxy},
 	}
 
 	// Initially proxy is active
@@ -294,7 +264,7 @@ func TestProxyManagerCloseMethodNonExistentPort(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	proxy := &TcpProxyService{
+	proxy := &ProxyService{
 		node:     nil,
 		Port:     8080,
 		Dest:     "test-peer",
@@ -305,7 +275,7 @@ func TestProxyManagerCloseMethodNonExistentPort(t *testing.T) {
 
 	manager := &ProxyManager{
 		node:    nil,
-		proxies: []*TcpProxyService{proxy},
+		proxies: []*ProxyService{proxy},
 	}
 
 	// Initially proxy is active
@@ -318,11 +288,11 @@ func TestProxyManagerCloseMethodNonExistentPort(t *testing.T) {
 	assert.False(t, proxy.Done())
 }
 
-func TestTcpProxyServicePortComparison(t *testing.T) {
-	// Test TcpProxyService port comparison
-	proxy1 := &TcpProxyService{Port: 8080}
-	proxy2 := &TcpProxyService{Port: 8081}
-	proxy3 := &TcpProxyService{Port: 8080}
+func TestProxyServicePortComparison(t *testing.T) {
+	// Test ProxyService port comparison
+	proxy1 := &ProxyService{Port: 8080}
+	proxy2 := &ProxyService{Port: 8081}
+	proxy3 := &ProxyService{Port: 8080}
 
 	assert.Equal(t, uint64(8080), proxy1.Port)
 	assert.Equal(t, uint64(8081), proxy2.Port)
@@ -330,11 +300,11 @@ func TestTcpProxyServicePortComparison(t *testing.T) {
 	assert.NotEqual(t, proxy1.Port, proxy2.Port)
 }
 
-func TestTcpProxyServiceDestComparison(t *testing.T) {
-	// Test TcpProxyService destination comparison
-	proxy1 := &TcpProxyService{Dest: "peer1"}
-	proxy2 := &TcpProxyService{Dest: "peer2"}
-	proxy3 := &TcpProxyService{Dest: "peer1"}
+func TestProxyServiceDestComparison(t *testing.T) {
+	// Test ProxyService destination comparison
+	proxy1 := &ProxyService{Dest: "peer1"}
+	proxy2 := &ProxyService{Dest: "peer2"}
+	proxy3 := &ProxyService{Dest: "peer1"}
 
 	assert.Equal(t, peer.ID("peer1"), proxy1.Dest)
 	assert.Equal(t, peer.ID("peer2"), proxy2.Dest)
@@ -346,7 +316,7 @@ func TestProxyManagerLocking(t *testing.T) {
 	// Test ProxyManager thread safety (basic test)
 	manager := &ProxyManager{
 		node:    nil,
-		proxies: make([]*TcpProxyService, 0),
+		proxies: make([]*ProxyService, 0),
 	}
 
 	// Test concurrent access to Proxies method
@@ -370,10 +340,10 @@ func TestProxyManagerLocking(t *testing.T) {
 	assert.True(t, true)
 }
 
-func BenchmarkTcpProxyServiceCreation(b *testing.B) {
+func BenchmarkProxyServiceCreation(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		ctx, cancel := context.WithCancel(context.Background())
-		_ = &TcpProxyService{
+		_ = &ProxyService{
 			node:     nil,
 			Port:     uint64(8080 + i%1000),
 			Dest:     peer.ID("test-peer"),
@@ -388,7 +358,7 @@ func BenchmarkTcpProxyServiceCreation(b *testing.B) {
 func BenchmarkProxyManagerProxies(b *testing.B) {
 	manager := &ProxyManager{
 		node:    nil,
-		proxies: make([]*TcpProxyService, 0),
+		proxies: make([]*ProxyService, 0),
 	}
 
 	b.ResetTimer()
@@ -397,11 +367,11 @@ func BenchmarkProxyManagerProxies(b *testing.B) {
 	}
 }
 
-func BenchmarkTcpProxyServiceDone(b *testing.B) {
+func BenchmarkProxyServiceDone(b *testing.B) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	proxy := &TcpProxyService{
+	proxy := &ProxyService{
 		node:     nil,
 		Port:     8080,
 		Dest:     "test-peer",
@@ -417,31 +387,9 @@ func BenchmarkTcpProxyServiceDone(b *testing.B) {
 }
 
 // Additional functional tests for HTTP proxy
-func TestHttpProxyServiceCreation(t *testing.T) {
-	// Test HTTP proxy service creation
-	service := NewHttpProxyService(nil, nil, "test-peer")
-
-	assert.NotNil(t, service)
-	assert.Nil(t, service.host)
-	assert.Equal(t, peer.ID("test-peer"), service.dest)
-	assert.Nil(t, service.proxyAddr)
-}
-
-func TestHttpProxyServiceWithMultiaddr(t *testing.T) {
-	// Test HTTP proxy service with multiaddr
-	addr, err := ma.NewMultiaddr("/ip4/127.0.0.1/tcp/8080")
-	require.NoError(t, err)
-
-	service := NewHttpProxyService(nil, addr, "test-peer")
-
-	assert.NotNil(t, service)
-	assert.Equal(t, peer.ID("test-peer"), service.dest)
-	assert.Equal(t, addr, service.proxyAddr)
-}
 
 func TestProxyManagerNewProxyManager(t *testing.T) {
 	// Test NewProxyManager function
-	// Note: NewProxyManager will panic with nil node due to Bind() call
 	// This is expected behavior, so we test that it panics
 	assert.Panics(t, func() {
 		NewProxyManager(nil)
@@ -452,14 +400,14 @@ func TestProxyManagerProxyMethod(t *testing.T) {
 	// Test Proxy method with valid parameters
 	manager := &ProxyManager{
 		node:    nil,
-		proxies: make([]*TcpProxyService, 0),
+		proxies: make([]*ProxyService, 0),
 	}
 
 	// Test port conflict first
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	existingProxy := &TcpProxyService{
+	existingProxy := &ProxyService{
 		node:     nil,
 		Port:     8080,
 		Dest:     "existing-peer",
@@ -475,9 +423,9 @@ func TestProxyManagerProxyMethod(t *testing.T) {
 	assert.Contains(t, err.Error(), "proxy port 8080 already exist")
 }
 
-func TestTcpProxyServiceServeWithoutDestAddr(t *testing.T) {
-	// Test TcpProxyService Serve method without DestAddr
-	proxy := &TcpProxyService{
+func TestProxyServiceServeWithoutDestAddr(t *testing.T) {
+	// Test ProxyService Serve method without DestAddr
+	proxy := &ProxyService{
 		node:     nil,
 		Port:     8080,
 		Dest:     "test-peer",
@@ -496,7 +444,7 @@ func TestProxyManagerConcurrentAccess(t *testing.T) {
 	// Test concurrent access to ProxyManager
 	manager := &ProxyManager{
 		node:    nil,
-		proxies: make([]*TcpProxyService, 0),
+		proxies: make([]*ProxyService, 0),
 	}
 
 	// Add some proxies
@@ -505,8 +453,8 @@ func TestProxyManagerConcurrentAccess(t *testing.T) {
 	defer cancel1()
 	defer cancel2()
 
-	proxy1 := &TcpProxyService{Port: 8080, ctx: ctx1, cancel: cancel1}
-	proxy2 := &TcpProxyService{Port: 8081, ctx: ctx2, cancel: cancel2}
+	proxy1 := &ProxyService{Port: 8080, ctx: ctx1, cancel: cancel1}
+	proxy2 := &ProxyService{Port: 8081, ctx: ctx2, cancel: cancel2}
 
 	manager.proxies = append(manager.proxies, proxy1, proxy2)
 
@@ -529,11 +477,11 @@ func TestProxyManagerConcurrentAccess(t *testing.T) {
 	assert.True(t, true)
 }
 
-func TestTcpProxyServiceContextCancellation(t *testing.T) {
-	// Test TcpProxyService context cancellation
+func TestProxyServiceContextCancellation(t *testing.T) {
+	// Test ProxyService context cancellation
 	ctx, cancel := context.WithCancel(context.Background())
 
-	proxy := &TcpProxyService{
+	proxy := &ProxyService{
 		node:     nil,
 		Port:     8080,
 		Dest:     "test-peer",
@@ -557,12 +505,12 @@ func TestProxyManagerCloseAllProxies(t *testing.T) {
 	ctx1, cancel1 := context.WithCancel(context.Background())
 	ctx2, cancel2 := context.WithCancel(context.Background())
 
-	proxy1 := &TcpProxyService{Port: 8080, ctx: ctx1, cancel: cancel1}
-	proxy2 := &TcpProxyService{Port: 8081, ctx: ctx2, cancel: cancel2}
+	proxy1 := &ProxyService{Port: 8080, ctx: ctx1, cancel: cancel1}
+	proxy2 := &ProxyService{Port: 8081, ctx: ctx2, cancel: cancel2}
 
 	manager := &ProxyManager{
 		node:    nil,
-		proxies: []*TcpProxyService{proxy1, proxy2},
+		proxies: []*ProxyService{proxy1, proxy2},
 	}
 
 	// Initially both proxies are active
@@ -578,19 +526,10 @@ func TestProxyManagerCloseAllProxies(t *testing.T) {
 	assert.True(t, proxy2.Done())
 }
 
-func BenchmarkHttpProxyServiceCreation(b *testing.B) {
-	addr, _ := ma.NewMultiaddr("/ip4/127.0.0.1/tcp/8080")
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_ = NewHttpProxyService(nil, addr, "test-peer")
-	}
-}
-
 func BenchmarkProxyManagerProxy(b *testing.B) {
 	manager := &ProxyManager{
 		node:    nil,
-		proxies: make([]*TcpProxyService, 0),
+		proxies: make([]*ProxyService, 0),
 	}
 
 	b.ResetTimer()
@@ -600,43 +539,8 @@ func BenchmarkProxyManagerProxy(b *testing.B) {
 	}
 }
 
-// Test HTTP Proxy Service creation with nil host
-func TestHttpProxyServiceCreationWithNilHost(t *testing.T) {
-	// Test creating HTTP proxy service with nil host (will fail but we can test the function)
-	proxyAddr, err := ma.NewMultiaddr("/ip4/127.0.0.1/tcp/8080")
-	require.NoError(t, err)
-
-	dest := peer.ID("test-peer")
-
-	// This will fail due to nil host, but we can test the function exists
-	service := NewHttpProxyService(nil, proxyAddr, dest)
-
-	// Verify the service was created with the expected fields
-	assert.Nil(t, service.host)
-	assert.Equal(t, proxyAddr, service.proxyAddr)
-	assert.Equal(t, dest, service.dest)
-}
-
-// Test HTTP Proxy Service Bind method
-func TestHttpProxyServiceBind(t *testing.T) {
-	proxyAddr, err := ma.NewMultiaddr("/ip4/127.0.0.1/tcp/8080")
-	require.NoError(t, err)
-
-	dest := peer.ID("test-peer")
-	service := &ProxyService{
-		host:      nil,
-		proxyAddr: proxyAddr,
-		dest:      dest,
-	}
-
-	// Test that Bind panics due to nil host
-	assert.Panics(t, func() {
-		service.Bind()
-	})
-}
-
 // Test TCP Proxy Service with different configurations
-func TestTcpProxyServiceConfigurations(t *testing.T) {
+func TestProxyServiceConfigurations(t *testing.T) {
 	tests := []struct {
 		name     string
 		port     uint64
@@ -671,7 +575,7 @@ func TestTcpProxyServiceConfigurations(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			service := &TcpProxyService{
+			service := &ProxyService{
 				node:     nil,
 				Port:     tt.port,
 				Dest:     tt.dest,
@@ -690,7 +594,7 @@ func TestTcpProxyServiceConfigurations(t *testing.T) {
 func TestProxyManagerWithDifferentConfigurations(t *testing.T) {
 	manager := &ProxyManager{
 		node:    nil,
-		proxies: make([]*TcpProxyService, 0),
+		proxies: make([]*ProxyService, 0),
 	}
 
 	// Test adding multiple proxies with different configurations

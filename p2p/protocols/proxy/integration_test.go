@@ -188,13 +188,13 @@ func TestProxyServiceMultipleStreams(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	// Create multiple proxies
-	proxies := make([]*TcpProxyService, numServers)
+	proxies := make([]*ProxyService, numServers)
 	for i := 0; i < numServers; i++ {
 		proxyPort := uint64(9100 + i)
 		serverAddr := fmt.Sprintf("127.0.0.1:%d", 9000+i)
-		proxy, err := proxy1.Proxy(node2.ID(), proxyPort, serverAddr)
+		proxyService, err := proxy1.Proxy(node2.ID(), proxyPort, serverAddr)
 		require.NoError(t, err)
-		proxies[i] = proxy
+		proxies[i] = proxyService
 		// Small delay between proxy creations
 		time.Sleep(100 * time.Millisecond)
 	}

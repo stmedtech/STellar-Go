@@ -526,29 +526,37 @@ func (s *APIServer) CreateProxy(c *gin.Context) {
 		return
 	}
 
-	// Find the device's proxy manager (assuming it's available through the device)
-	if s.Node.Devices == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "No proxy manager available"})
-		return
-	}
-
 	destAddr := fmt.Sprintf("%s:%d", req.RemoteHost, req.RemotePort)
 
 	proxy, err := s.Proxy.Proxy(device.ID, req.LocalPort, destAddr)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Can not create proxy"})
+		logger.Warnf("Failed to create proxy: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Cannot create proxy: %v", err)})
 		return
 	}
 
-	// Note: This would need to be implemented properly with proxy manager access
-	// For now, return a placeholder response
-	c.JSON(http.StatusOK, proxy)
+	c.JSON(http.StatusOK, gin.H{
+		"success":     true,
+		"local_port":  proxy.Port,
+		"remote_addr": destAddr,
+		"device_id":   req.DeviceID,
+	})
 }
 
 func (s *APIServer) ListProxies(c *gin.Context) {
-	// Note: This would need proper proxy manager integration
-	// For now, return empty list
-	c.JSON(http.StatusOK, s.Proxy.Proxies())
+	proxies := s.Proxy.Proxies()
+
+	// Convert to API response format
+	proxyList := make([]gin.H, 0, len(proxies))
+	for _, p := range proxies {
+		proxyList = append(proxyList, gin.H{
+			"local_port":  p.Port,
+			"remote_addr": p.DestAddr,
+			"device_id":   p.Dest.String(),
+		})
+	}
+
+	c.JSON(http.StatusOK, proxyList)
 }
 
 func (s *APIServer) CloseProxy(c *gin.Context) {

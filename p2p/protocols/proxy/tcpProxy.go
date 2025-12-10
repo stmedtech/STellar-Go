@@ -10,49 +10,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
-// logger is declared in httpProxy.go
-
-// tcpStreamHandler handles incoming libp2p streams for proxy server
-func tcpStreamHandler(stream network.Stream) {
-	defer stream.Close()
-
-	// Create server with the libp2p stream (which implements io.ReadWriteCloser)
-	srv := service.NewServer(stream)
-	if srv == nil {
-		logger.Warn("Failed to create proxy server")
-		return
-	}
-
-	// Accept handshake
-	if err := srv.Accept(); err != nil {
-		logger.Warnf("Proxy handshake failed: %v", err)
-		return
-	}
-
-	// Serve control plane in background
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	serveDone := make(chan error, 1)
-	go func() {
-		serveDone <- srv.Serve(ctx)
-	}()
-
-	// Wait for stream to close or serve to finish
-	select {
-	case <-serveDone:
-		// Server finished (likely stream closed)
-		srv.Close()
-	case <-ctx.Done():
-		srv.Close()
-	}
-}
-
-type TcpProxyService struct {
+// ProxyService represents a client-side TCP proxy that listens on a local port
+// and forwards connections to a remote peer via the proxy protocol.
+type ProxyService struct {
 	node     *node.Node
 	Port     uint64
 	Dest     peer.ID
@@ -63,10 +26,13 @@ type TcpProxyService struct {
 	clientMu sync.Mutex
 }
 
-func NewTcpProxyService(n *node.Node, port uint64, dest peer.ID, destAddr string) *TcpProxyService {
+// NewProxyService creates a new client-side proxy service.
+// The proxy will listen on the specified local port and forward connections
+// to the remote peer's destination address.
+func NewProxyService(n *node.Node, port uint64, dest peer.ID, destAddr string) *ProxyService {
 	ctx, cancel := context.WithCancel(context.Background())
 
-	return &TcpProxyService{
+	return &ProxyService{
 		node:     n,
 		Port:     port,
 		Dest:     dest,
@@ -76,19 +42,16 @@ func NewTcpProxyService(n *node.Node, port uint64, dest peer.ID, destAddr string
 	}
 }
 
-func (p *TcpProxyService) Bind() {
-	p.node.Host.SetStreamHandler(constant.StellarProxyProtocol, p.node.Policy.AuthorizeStream(tcpStreamHandler))
-	logger.Info("TCP Proxy server is ready")
-}
-
-func (p *TcpProxyService) Close() {
+// Close stops the proxy service and closes all associated connections.
+func (p *ProxyService) Close() {
 	p.cancel()
 	if p.client != nil {
 		p.client.CloseAll()
 	}
 }
 
-func (p *TcpProxyService) Done() bool {
+// Done returns true if the proxy service has been closed.
+func (p *ProxyService) Done() bool {
 	select {
 	case <-p.ctx.Done():
 		return true
@@ -97,8 +60,9 @@ func (p *TcpProxyService) Done() bool {
 	}
 }
 
-// getOrCreateClient gets or creates a client connection to the destination peer
-func (p *TcpProxyService) getOrCreateClient() (*service.Client, error) {
+// getOrCreateClient gets or creates a client connection to the destination peer.
+// The client is reused across multiple proxy connections to the same peer.
+func (p *ProxyService) getOrCreateClient() (*service.Client, error) {
 	p.clientMu.Lock()
 	defer p.clientMu.Unlock()
 
@@ -130,7 +94,9 @@ func (p *TcpProxyService) getOrCreateClient() (*service.Client, error) {
 	return client, nil
 }
 
-func (p *TcpProxyService) Serve() error {
+// Serve starts listening on the local port and forwarding connections to the remote peer.
+// This method blocks until the service is closed via Close().
+func (p *ProxyService) Serve() error {
 	if p.DestAddr == "" {
 		return fmt.Errorf("destination address required")
 	}
@@ -195,7 +161,8 @@ func (p *TcpProxyService) Serve() error {
 	return nil
 }
 
-func (p *TcpProxyService) acceptConnection(conn *net.TCPConn, id string, laddr *net.TCPAddr) {
+// acceptConnection handles an incoming TCP connection and forwards it through the proxy.
+func (p *ProxyService) acceptConnection(conn *net.TCPConn, id string, laddr *net.TCPAddr) {
 	defer conn.Close()
 
 	if _, deviceErr := p.node.GetDevice(id); deviceErr != nil {
@@ -203,18 +170,13 @@ func (p *TcpProxyService) acceptConnection(conn *net.TCPConn, id string, laddr *
 		return
 	}
 
-	// Get or create client
 	client, err := p.getOrCreateClient()
 	if err != nil {
 		logger.Errorf("Failed to get client: %v", err)
 		return
 	}
 
-	// Generate proxy ID
 	proxyID := fmt.Sprintf("%s:%d", id, p.Port)
-
-	// Open proxy connection using the service client
-	// OpenWithLocalConn starts bidirectional forwarding and handles the connection lifecycle
 	_, err = client.OpenWithLocalConn(proxyID, p.DestAddr, "tcp", conn)
 	if err != nil {
 		logger.Errorf("Failed to open proxy: %v", err)
@@ -222,8 +184,5 @@ func (p *TcpProxyService) acceptConnection(conn *net.TCPConn, id string, laddr *
 	}
 
 	logger.Debugf("Proxy connection established: %s -> %s", proxyID, p.DestAddr)
-
-	// The forwarding goroutines in OpenWithLocalConn will handle the connection lifecycle
-	// Wait for context cancellation (service shutdown) or connection close
 	<-p.ctx.Done()
 }

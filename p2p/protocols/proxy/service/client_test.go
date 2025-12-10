@@ -25,7 +25,7 @@ func TestNewClient(t *testing.T) {
 
 // TestClientConnect tests client connection/handshake
 func TestClientConnect(t *testing.T) {
-	clientConn, serverConn := setupTCPConnection(t)
+	clientConn, serverConn := SetupTCPConnection(t)
 	defer clientConn.Close()
 	defer serverConn.Close()
 
@@ -60,7 +60,7 @@ func TestClientConnect(t *testing.T) {
 
 // TestClientOpenClose tests proxy open and close
 func TestClientOpenClose(t *testing.T) {
-	clientConn, serverConn := setupTCPConnection(t)
+	clientConn, serverConn := SetupTCPConnection(t)
 	defer clientConn.Close()
 	defer serverConn.Close()
 
@@ -112,7 +112,7 @@ func TestClientOpenClose(t *testing.T) {
 
 // TestClientList tests proxy listing
 func TestClientList(t *testing.T) {
-	clientConn, serverConn := setupTCPConnection(t)
+	clientConn, serverConn := SetupTCPConnection(t)
 	defer clientConn.Close()
 	defer serverConn.Close()
 
@@ -166,7 +166,7 @@ func TestClientList(t *testing.T) {
 
 // TestClientCloseAll tests closing all proxies
 func TestClientCloseAll(t *testing.T) {
-	clientConn, serverConn := setupTCPConnection(t)
+	clientConn, serverConn := SetupTCPConnection(t)
 	defer clientConn.Close()
 	defer serverConn.Close()
 

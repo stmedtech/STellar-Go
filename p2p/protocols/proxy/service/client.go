@@ -162,7 +162,7 @@ func (c *Client) Open(proxyID, remoteAddr, proto string) (*Proxy, error) {
 	}
 
 	proxy := c.manager.AddProxy(proxyID, remoteAddr, proto, stream)
-	
+
 	// Start forwarding data between local connection and stream
 	go c.forwardProxy(proxy, stream)
 
@@ -171,7 +171,7 @@ func (c *Client) Open(proxyID, remoteAddr, proto string) (*Proxy, error) {
 
 // forwardProxy handles bidirectional data forwarding for a proxy
 func (c *Client) forwardProxy(proxy *Proxy, stream io.ReadWriteCloser) {
-	// This will be called from TcpProxyService when a local connection is accepted
+	// This will be called from ProxyService when a local connection is accepted
 	// The actual forwarding logic will be handled by the caller
 }
 
@@ -581,4 +581,3 @@ func matchHandshakeType(ht protocol.HandshakeType) matcher {
 		return h.Type == ht, nil
 	}
 }
-
