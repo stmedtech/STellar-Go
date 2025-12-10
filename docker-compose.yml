@@ -25,9 +25,7 @@ services:
       - ./bootstrappers.txt:/app/bootstrappers.txt
       - ./data/test:/app/data
       - ./cache/.conda:/root/.conda
-      - ./cache/stellar:/root/.local/share/Stellar
-      - ./environment.yaml:/app/environment.yaml
-      - ./test.py:/app/test.py
+      - ./cache/stellar:/root/.local/share/stellar
     deploy:
       resources:
         reservations:
