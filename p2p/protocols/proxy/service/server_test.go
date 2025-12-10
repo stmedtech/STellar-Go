@@ -12,7 +12,7 @@ import (
 
 // TestNewServer tests server creation
 func TestNewServer(t *testing.T) {
-	clientConn, serverConn := setupTCPConnection(t)
+	clientConn, serverConn := SetupTCPConnection(t)
 	defer clientConn.Close()
 	defer serverConn.Close()
 
@@ -25,7 +25,7 @@ func TestNewServer(t *testing.T) {
 
 // TestServerAccept tests the handshake acceptance
 func TestServerAccept(t *testing.T) {
-	clientConn, serverConn := setupTCPConnection(t)
+	clientConn, serverConn := SetupTCPConnection(t)
 	defer clientConn.Close()
 	defer serverConn.Close()
 
@@ -61,7 +61,7 @@ func TestServerAccept(t *testing.T) {
 
 // TestServerHandleProxyOpen tests proxy open handling
 func TestServerHandleProxyOpen(t *testing.T) {
-	clientConn, serverConn := setupTCPConnection(t)
+	clientConn, serverConn := SetupTCPConnection(t)
 	defer clientConn.Close()
 	defer serverConn.Close()
 
@@ -110,7 +110,7 @@ func TestServerHandleProxyOpen(t *testing.T) {
 
 // TestServerHandleProxyList tests proxy list handling
 func TestServerHandleProxyList(t *testing.T) {
-	clientConn, serverConn := setupTCPConnection(t)
+	clientConn, serverConn := SetupTCPConnection(t)
 	defer clientConn.Close()
 	defer serverConn.Close()
 
@@ -162,7 +162,7 @@ func TestServerHandleProxyList(t *testing.T) {
 
 // TestServerClose tests server cleanup
 func TestServerClose(t *testing.T) {
-	clientConn, serverConn := setupTCPConnection(t)
+	clientConn, serverConn := SetupTCPConnection(t)
 	defer clientConn.Close()
 	defer serverConn.Close()
 

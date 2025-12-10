@@ -10,7 +10,6 @@ import (
 	"stellar/p2p/node"
 	"stellar/p2p/protocols/proxy/service"
 
-	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -110,7 +109,7 @@ func TestProxyServiceIntegration(t *testing.T) {
 // TestProxyServiceHandshake tests the handshake process using TCP connections
 func TestProxyServiceHandshake(t *testing.T) {
 	// Use TCP connections for simpler testing
-	clientConn, serverConn := setupTCPConnection(t)
+	clientConn, serverConn := service.SetupTCPConnection(t)
 	defer clientConn.Close()
 	defer serverConn.Close()
 
@@ -144,32 +143,6 @@ func TestProxyServiceHandshake(t *testing.T) {
 	assert.NoError(t, err)
 
 	assert.Equal(t, clientID, srv.ClientID())
-}
-
-// setupTCPConnection creates a TCP connection pair for testing
-func setupTCPConnection(t *testing.T) (clientConn, serverConn net.Conn) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	t.Cleanup(func() { listener.Close() })
-
-	serverAddr := listener.Addr().String()
-
-	var server net.Conn
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		var err error
-		server, err = listener.Accept()
-		require.NoError(t, err)
-	}()
-
-	client, err := net.Dial("tcp", serverAddr)
-	require.NoError(t, err)
-
-	<-done
-	require.NotNil(t, server)
-
-	return client, server
 }
 
 // TestProxyServiceMultipleStreams tests multiple concurrent proxy streams
@@ -280,9 +253,4 @@ func TestProxyServiceMultipleStreams(t *testing.T) {
 		servers[i].Close()
 		proxy1.Close(uint64(9100 + i))
 	}
-}
-
-// mockStreamHandler is a helper to simulate stream handling
-func mockStreamHandler(handler func(network.Stream)) func(network.Stream) {
-	return handler
 }

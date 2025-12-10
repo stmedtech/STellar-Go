@@ -10,9 +10,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestNewClient tests client creation
 func TestNewClient(t *testing.T) {
-	clientConn, serverConn := setupTCPConnection(t)
+	clientConn, serverConn := SetupTCPConnection(t)
 	defer clientConn.Close()
 	defer serverConn.Close()
 

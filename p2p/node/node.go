@@ -124,6 +124,10 @@ func NewBootstrapper(
 	n = &Node{
 		Bootstrapper: true,
 		RelayNode:    relayNode,
+		Policy: &policy.ProtocolPolicy{
+			Enable:    true,
+			WhiteList: make([]string, 0),
+		},
 
 		CTX:    ctx,
 		Cancel: cancel,

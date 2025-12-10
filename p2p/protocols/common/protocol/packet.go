@@ -190,8 +190,8 @@ func NewPacketReadWriteCloser(conn io.ReadWriteCloser) *PacketReadWriteCloser {
 	return &PacketReadWriteCloser{conn: conn}
 }
 
-// Read reads data from the underlying connection
-// Note: Use ReadPacket() for packet-based communication
+// Read reads data from the underlying connection.
+// For packet-based communication, use ReadPacket() instead.
 func (p *PacketReadWriteCloser) Read(data []byte) (int, error) {
 	if p == nil || p.conn == nil {
 		return 0, io.ErrClosedPipe
@@ -199,8 +199,8 @@ func (p *PacketReadWriteCloser) Read(data []byte) (int, error) {
 	return p.conn.Read(data)
 }
 
-// Write writes data to the underlying connection
-// Note: Use WritePacket() for packet-based communication
+// Write writes data to the underlying connection.
+// For packet-based communication, use WritePacket() instead.
 func (p *PacketReadWriteCloser) Write(data []byte) (int, error) {
 	if p == nil || p.conn == nil {
 		return 0, io.ErrClosedPipe

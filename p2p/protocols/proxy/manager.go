@@ -20,9 +20,6 @@ func NewProxyManager(node *node.Node) *ProxyManager {
 		proxies: make([]*TcpProxyService, 0),
 	}
 
-	// proxy := NewHttpProxyService(node.Host, nil, "")
-	// proxy.Bind()
-
 	proxy := NewTcpProxyService(node, 0, "", "")
 	proxy.Bind()
 
@@ -30,13 +27,6 @@ func NewProxyManager(node *node.Node) *ProxyManager {
 }
 
 func (m *ProxyManager) Proxy(peer peer.ID, hostPort uint64, destAddr string) (proxy *TcpProxyService, err error) {
-	// proxyAddr, err := ma.NewMultiaddr(fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", hostPort))
-	// if err != nil {
-	// 	return
-	// }
-	// proxy := NewHttpProxyService(n.Host, proxyAddr, peer)
-	// proxy.Serve()
-
 	for _, p := range m.proxies {
 		if p.Port == hostPort {
 			err = fmt.Errorf("proxy port %d already exist", hostPort)

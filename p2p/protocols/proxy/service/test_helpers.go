@@ -8,8 +8,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// setupTCPConnection creates a TCP connection pair for testing
-func setupTCPConnection(t testing.TB) (clientConn, serverConn net.Conn) {
+// SetupTCPConnection creates a TCP connection pair for testing.
+// This is a shared test helper used across proxy service tests.
+func SetupTCPConnection(t testing.TB) (clientConn, serverConn net.Conn) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	t.Cleanup(func() { listener.Close() })
