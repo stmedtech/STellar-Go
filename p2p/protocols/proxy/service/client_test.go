@@ -19,8 +19,8 @@ func TestNewClient(t *testing.T) {
 	require.NotNil(t, client)
 	assert.Equal(t, "test-client", client.ClientID())
 	assert.NotNil(t, client.manager)
-	assert.NotNil(t, client.multiplexer)
-	assert.NotNil(t, client.controlConn)
+	assert.NotNil(t, client.Multiplexer())
+	assert.NotNil(t, client.ControlConn())
 }
 
 // TestClientConnect tests client connection/handshake

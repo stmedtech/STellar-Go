@@ -18,6 +18,16 @@ const (
 	HandshakeTypeProxyList     HandshakeType = "proxy_list"
 	HandshakeTypeProxyListResp HandshakeType = "proxy_list_response"
 	HandshakeTypeError         HandshakeType = "error"
+	// File protocol handshake types
+	HandshakeTypeFileHello        HandshakeType = "file_hello"
+	HandshakeTypeFileHelloAck     HandshakeType = "file_hello_ack"
+	HandshakeTypeFileList         HandshakeType = "file_list"
+	HandshakeTypeFileListResponse HandshakeType = "file_list_response"
+	HandshakeTypeFileGet          HandshakeType = "file_get"
+	HandshakeTypeFileGetResponse  HandshakeType = "file_get_response"
+	HandshakeTypeFileSend         HandshakeType = "file_send"
+	HandshakeTypeFileSendResponse HandshakeType = "file_send_response"
+	HandshakeTypeFileError        HandshakeType = "file_error"
 )
 
 // HandshakePacket represents a handshake message encapsulated within a Packet
@@ -79,6 +89,67 @@ type ProxyInfo struct {
 type ErrorPayload struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
+}
+
+// FileHelloPayload is the payload for the initial file protocol hello handshake
+type FileHelloPayload struct {
+	Version  string   `json:"version"`
+	ClientID string   `json:"client_id"`
+	Features []string `json:"features"` // e.g., "list", "get", "send", "checksum", "recursive"
+}
+
+// FileListRequest is the payload for requesting a file/directory listing
+type FileListRequest struct {
+	Path      string `json:"path"`
+	Recursive bool   `json:"recursive,omitempty"`
+}
+
+// FileListResponse is the response to a file list request
+type FileListResponse struct {
+	Success bool        `json:"success"`
+	Files   []FileEntry `json:"files,omitempty"`
+	Error   string      `json:"error,omitempty"`
+}
+
+// FileEntry represents a file or directory entry (matches the existing FileEntry struct)
+type FileEntry struct {
+	DirectoryName string      `json:"directory_name"`
+	Filename      string      `json:"filename"`
+	Size          int64       `json:"size"`
+	IsDir         bool        `json:"is_dir"`
+	Children      []FileEntry `json:"children,omitempty"`
+}
+
+// FileGetRequest is the payload for requesting a file download
+type FileGetRequest struct {
+	FileName string `json:"file_name"`
+}
+
+// FileGetResponse is the response to a file get request
+type FileGetResponse struct {
+	Success  bool      `json:"success"`
+	StreamID uint32    `json:"stream_id,omitempty"` // Data stream ID for file transfer
+	FileInfo *FileInfo `json:"file_info,omitempty"` // File metadata (size, checksum)
+	Error    string    `json:"error,omitempty"`
+}
+
+// FileInfo contains file metadata
+type FileInfo struct {
+	Filename string `json:"filename"`
+	Size     int64  `json:"size"`
+	Checksum string `json:"checksum"`
+}
+
+// FileSendRequest is the payload for requesting a file upload
+type FileSendRequest struct {
+	FileName string `json:"file_name"`
+}
+
+// FileSendResponse is the response to a file send request
+type FileSendResponse struct {
+	Success  bool   `json:"success"`
+	StreamID uint32 `json:"stream_id,omitempty"` // Data stream ID for file transfer
+	Error    string `json:"error,omitempty"`
 }
 
 // NewHandshakePacket creates a new handshake packet with the given type and payload
@@ -225,6 +296,80 @@ func NewProxyListResponsePacket(proxies []ProxyInfo) (*Packet, error) {
 // NewErrorPacket creates an error packet
 func NewErrorPacket(code, message string) (*Packet, error) {
 	return NewHandshakePacket(HandshakeTypeError, ErrorPayload{
+		Code:    code,
+		Message: message,
+	})
+}
+
+// File protocol convenience functions
+
+// NewFileHelloPacket creates a file_hello packet
+func NewFileHelloPacket(version, clientID string, features []string) (*Packet, error) {
+	return NewHandshakePacket(HandshakeTypeFileHello, FileHelloPayload{
+		Version:  version,
+		ClientID: clientID,
+		Features: features,
+	})
+}
+
+// NewFileHelloAckPacket creates a file_hello_ack packet
+func NewFileHelloAckPacket() (*Packet, error) {
+	return NewHandshakePacket(HandshakeTypeFileHelloAck, nil)
+}
+
+// NewFileListPacket creates a file_list packet
+func NewFileListPacket(path string, recursive bool) (*Packet, error) {
+	return NewHandshakePacket(HandshakeTypeFileList, FileListRequest{
+		Path:      path,
+		Recursive: recursive,
+	})
+}
+
+// NewFileListResponsePacket creates a file_list_response packet
+func NewFileListResponsePacket(success bool, files []FileEntry, errMsg string) (*Packet, error) {
+	return NewHandshakePacket(HandshakeTypeFileListResponse, FileListResponse{
+		Success: success,
+		Files:   files,
+		Error:   errMsg,
+	})
+}
+
+// NewFileGetPacket creates a file_get packet
+func NewFileGetPacket(fileName string) (*Packet, error) {
+	return NewHandshakePacket(HandshakeTypeFileGet, FileGetRequest{
+		FileName: fileName,
+	})
+}
+
+// NewFileGetResponsePacket creates a file_get_response packet
+func NewFileGetResponsePacket(success bool, streamID uint32, fileInfo *FileInfo, errMsg string) (*Packet, error) {
+	return NewHandshakePacket(HandshakeTypeFileGetResponse, FileGetResponse{
+		Success:  success,
+		StreamID: streamID,
+		FileInfo: fileInfo,
+		Error:    errMsg,
+	})
+}
+
+// NewFileSendPacket creates a file_send packet
+func NewFileSendPacket(fileName string) (*Packet, error) {
+	return NewHandshakePacket(HandshakeTypeFileSend, FileSendRequest{
+		FileName: fileName,
+	})
+}
+
+// NewFileSendResponsePacket creates a file_send_response packet
+func NewFileSendResponsePacket(success bool, streamID uint32, errMsg string) (*Packet, error) {
+	return NewHandshakePacket(HandshakeTypeFileSendResponse, FileSendResponse{
+		Success:  success,
+		StreamID: streamID,
+		Error:    errMsg,
+	})
+}
+
+// NewFileErrorPacket creates a file_error packet
+func NewFileErrorPacket(code, message string) (*Packet, error) {
+	return NewHandshakePacket(HandshakeTypeFileError, ErrorPayload{
 		Code:    code,
 		Message: message,
 	})

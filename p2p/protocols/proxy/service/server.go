@@ -6,26 +6,18 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"sync"
 	"time"
 
-	"stellar/p2p/protocols/common/multiplexer"
 	"stellar/p2p/protocols/common/protocol"
+	base_service "stellar/p2p/protocols/common/service"
+
 	"golang.org/x/sync/errgroup"
 )
 
 // Server handles server-side proxy operations
 type Server struct {
-	controlConn      *protocol.PacketReadWriteCloser
-	multiplexer      *multiplexer.Multiplexer
-	manager          *Manager
-	control          *controlPlane
-	clientID         string
-	handshakeDone    bool
-	streamIDCounter  uint32
-	HandshakeTimeout time.Duration
-	mu               sync.RWMutex
-	acceptMu         sync.Mutex // Protects Accept() from concurrent calls
+	*base_service.BaseServer
+	manager *Manager
 }
 
 // NewServer creates a new proxy server with automatic multiplexer setup
@@ -34,110 +26,41 @@ func NewServer(conn io.ReadWriteCloser) *Server {
 		return nil
 	}
 
-	mux := multiplexer.NewMultiplexer(conn)
-	controlStream, err := mux.ControlStream()
-	if err != nil {
+	handshakeHandler := &proxyHandshakeHandler{}
+	dispatcher := &proxyPacketDispatcher{}
+
+	base := base_service.NewBaseServer(conn, handshakeHandler, dispatcher)
+	if base == nil {
 		return nil
 	}
 
-	packetConn := protocol.NewPacketReadWriteCloser(controlStream)
-	return &Server{
-		controlConn:      packetConn,
-		multiplexer:      mux,
-		manager:          NewManager(),
-		HandshakeTimeout: 30 * time.Second,
-		control:          newControlPlane(packetConn),
+	server := &Server{
+		BaseServer: base,
+		manager:    NewManager(),
 	}
+
+	// Set server reference in dispatcher
+	dispatcher.server = server
+
+	return server
 }
 
 // Accept performs handshake and accepts a client connection
-// This method is protected by acceptMu to prevent concurrent Accept() calls
+// Delegates to BaseServer.Accept()
 func (s *Server) Accept() error {
-	if s == nil {
+	if s == nil || s.BaseServer == nil {
 		return fmt.Errorf("server is nil")
 	}
-
-	// Use exclusive lock to prevent concurrent Accept() calls
-	s.acceptMu.Lock()
-	defer s.acceptMu.Unlock()
-
-	// Check if already accepted
-	s.mu.RLock()
-	alreadyAccepted := s.handshakeDone
-	s.mu.RUnlock()
-
-	if alreadyAccepted {
-		return fmt.Errorf("already accepted")
-	}
-
-	// Read hello with timeout
-	handshake, err := s.readHandshakeWithTimeout(s.HandshakeTimeout)
-	if err != nil {
-		return err
-	}
-
-	if handshake.Type != protocol.HandshakeTypeHello {
-		return fmt.Errorf("unexpected type: %s, expected hello", handshake.Type)
-	}
-
-	var helloPayload protocol.HelloPayload
-	if err := handshake.UnmarshalPayload(&helloPayload); err != nil {
-		return fmt.Errorf("unmarshal payload: %w", err)
-	}
-
-	// Send ack
-	ackPacket, err := protocol.NewHelloAckPacket()
-	if err != nil {
-		return fmt.Errorf("create ack: %w", err)
-	}
-
-	if err := s.controlConn.WritePacket(ackPacket); err != nil {
-		return fmt.Errorf("send ack: %w", err)
-	}
-
-	// Mark as accepted
-	s.mu.Lock()
-	s.clientID = helloPayload.ClientID
-	s.handshakeDone = true
-	s.mu.Unlock()
-	return nil
+	return s.BaseServer.Accept()
 }
 
 // Serve runs the control-plane event loop until the context is canceled or an error occurs.
+// Delegates to BaseServer.Serve()
 func (s *Server) Serve(ctx context.Context) error {
-	if ctx == nil {
-		ctx = context.Background()
+	if s == nil || s.BaseServer == nil {
+		return fmt.Errorf("server is nil")
 	}
-	if err := s.ensureAccepted(); err != nil {
-		return err
-	}
-
-	for {
-		packet, err := s.control.Next(ctx)
-		if err != nil {
-			return err
-		}
-		if err := s.dispatchControlPacket(packet); err != nil {
-			return err
-		}
-	}
-}
-
-func (s *Server) dispatchControlPacket(handshake *protocol.HandshakePacket) error {
-	if handshake == nil {
-		return fmt.Errorf("nil handshake packet")
-	}
-
-	switch handshake.Type {
-	case protocol.HandshakeTypeProxyOpen:
-		return s.handleOpen(handshake)
-	case protocol.HandshakeTypeProxyClose:
-		return s.handleClose(handshake)
-	case protocol.HandshakeTypeProxyList:
-		return s.handleList(handshake)
-	default:
-		return fmt.Errorf("unknown type: %s", handshake.Type)
-	}
+	return s.BaseServer.Serve(ctx)
 }
 
 // Get gets a proxy by ID
@@ -158,12 +81,10 @@ func (s *Server) Count() int {
 
 // ClientID returns the client ID
 func (s *Server) ClientID() string {
-	if s == nil {
+	if s == nil || s.BaseServer == nil {
 		return ""
 	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.clientID
+	return s.BaseServer.ClientID()
 }
 
 // Close closes the server and all proxies
@@ -171,12 +92,9 @@ func (s *Server) Close() error {
 	if s == nil {
 		return nil
 	}
-	if s.control != nil {
-		s.control.Close()
-	}
 	s.manager.CloseAll()
-	if s.multiplexer != nil {
-		return s.multiplexer.Close()
+	if s.BaseServer != nil {
+		return s.BaseServer.Close()
 	}
 	return nil
 }
@@ -207,7 +125,7 @@ func (s *Server) handleOpen(handshake *protocol.HandshakePacket) error {
 	}
 
 	// Assign stream ID and send success response
-	streamID := s.nextStreamID()
+	streamID := s.NextStreamID()
 	if err := s.sendSuccess(request.ProxyID, streamID); err != nil {
 		remoteConn.Close()
 		return err
@@ -235,7 +153,7 @@ func (s *Server) handleClose(handshake *protocol.HandshakePacket) error {
 		if err != nil {
 			return err
 		}
-		return s.controlConn.WritePacket(responsePacket)
+		return s.ControlConn().WritePacket(responsePacket)
 	}
 
 	success := true
@@ -255,7 +173,7 @@ func (s *Server) handleClose(handshake *protocol.HandshakePacket) error {
 		return err
 	}
 
-	return s.controlConn.WritePacket(responsePacket)
+	return s.ControlConn().WritePacket(responsePacket)
 }
 
 func (s *Server) handleList(handshake *protocol.HandshakePacket) error {
@@ -271,7 +189,7 @@ func (s *Server) handleList(handshake *protocol.HandshakePacket) error {
 		return err
 	}
 
-	return s.controlConn.WritePacket(responsePacket)
+	return s.ControlConn().WritePacket(responsePacket)
 }
 
 func (s *Server) connectRemote(addr, protocol string) (net.Conn, error) {
@@ -286,23 +204,12 @@ func (s *Server) connectRemote(addr, protocol string) (net.Conn, error) {
 	}
 }
 
-func (s *Server) nextStreamID() uint32 {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.streamIDCounter == 0 {
-		s.streamIDCounter = 1 // Stream 0 is control
-	}
-	id := s.streamIDCounter
-	s.streamIDCounter++
-	return id
-}
-
 func (s *Server) sendSuccess(proxyID string, streamID uint32) error {
 	packet, err := protocol.NewProxyOpenedPacket(proxyID, true, streamID, "")
 	if err != nil {
 		return err
 	}
-	return s.controlConn.WritePacket(packet)
+	return s.ControlConn().WritePacket(packet)
 }
 
 func (s *Server) sendError(proxyID, msg string) error {
@@ -310,7 +217,7 @@ func (s *Server) sendError(proxyID, msg string) error {
 	if err != nil {
 		return err
 	}
-	return s.controlConn.WritePacket(packet)
+	return s.ControlConn().WritePacket(packet)
 }
 
 func (s *Server) forward(proxy *Proxy, remoteConn net.Conn, streamID uint32) {
@@ -345,8 +252,8 @@ func (s *Server) forward(proxy *Proxy, remoteConn net.Conn, streamID uint32) {
 		if stream != nil {
 			stream.Close()
 		}
-		if s.multiplexer != nil {
-			_ = s.multiplexer.CloseStream(streamID)
+		if s.Multiplexer() != nil {
+			_ = s.Multiplexer().CloseStream(streamID)
 		}
 	}()
 
@@ -372,7 +279,8 @@ func (s *Server) forward(proxy *Proxy, remoteConn net.Conn, streamID uint32) {
 }
 
 func (s *Server) waitForStream(streamID uint32) io.ReadWriteCloser {
-	if s.multiplexer == nil {
+	mux := s.Multiplexer()
+	if mux == nil {
 		return nil
 	}
 
@@ -380,7 +288,7 @@ func (s *Server) waitForStream(streamID uint32) io.ReadWriteCloser {
 	const delay = 100 * time.Millisecond
 
 	for i := 0; i < maxAttempts; i++ {
-		if stream, err := s.multiplexer.GetStream(streamID); err == nil {
+		if stream, err := mux.GetStream(streamID); err == nil {
 			return stream
 		}
 		time.Sleep(delay)
@@ -388,49 +296,3 @@ func (s *Server) waitForStream(streamID uint32) io.ReadWriteCloser {
 
 	return nil
 }
-
-func (s *Server) readHandshakeWithTimeout(timeout time.Duration) (*protocol.HandshakePacket, error) {
-	type result struct {
-		handshake *protocol.HandshakePacket
-		err       error
-	}
-
-	done := make(chan result, 1)
-
-	go func() {
-		packet, err := s.controlConn.ReadPacket()
-		if err != nil {
-			done <- result{nil, fmt.Errorf("read: %w", err)}
-			return
-		}
-
-		h, err := protocol.UnmarshalHandshakePacket(packet)
-		if err != nil {
-			done <- result{nil, fmt.Errorf("unmarshal: %w", err)}
-			return
-		}
-
-		done <- result{h, nil}
-	}()
-
-	select {
-	case res := <-done:
-		return res.handshake, res.err
-	case <-time.After(timeout):
-		return nil, fmt.Errorf("timeout")
-	}
-}
-
-func (s *Server) ensureAccepted() error {
-	if s == nil {
-		return fmt.Errorf("server is nil")
-	}
-	s.mu.RLock()
-	done := s.handshakeDone
-	s.mu.RUnlock()
-	if !done {
-		return fmt.Errorf("not accepted - call Accept() first")
-	}
-	return nil
-}
-

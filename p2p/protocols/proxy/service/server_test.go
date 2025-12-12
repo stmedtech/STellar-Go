@@ -19,8 +19,8 @@ func TestNewServer(t *testing.T) {
 	server := NewServer(serverConn)
 	require.NotNil(t, server)
 	assert.NotNil(t, server.manager)
-	assert.NotNil(t, server.multiplexer)
-	assert.NotNil(t, server.controlConn)
+	assert.NotNil(t, server.Multiplexer())
+	assert.NotNil(t, server.ControlConn())
 }
 
 // TestServerAccept tests the handshake acceptance
