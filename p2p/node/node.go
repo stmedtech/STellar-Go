@@ -56,9 +56,11 @@ type Node struct {
 	ReferenceToken string
 	Policy         *policy.ProtocolPolicy
 
-	Host    host.Host
-	DHT     *dht.IpfsDHT
-	Devices map[string]Device
+	Host host.Host
+	DHT  *dht.IpfsDHT
+	// Internal device storage - use Devices() and DiscoveredDevices() methods
+	discoveredDevices map[string]Device
+	healthyDevices    map[string]Device
 
 	CTX    context.Context
 	Cancel context.CancelFunc
@@ -132,9 +134,10 @@ func NewBootstrapper(
 		CTX:    ctx,
 		Cancel: cancel,
 
-		Host:    host,
-		DHT:     nil,
-		Devices: make(map[string]Device),
+		Host:              host,
+		DHT:               nil,
+		discoveredDevices: make(map[string]Device),
+		healthyDevices:    make(map[string]Device),
 	}
 	logger.Infof("Node ID: %v", n.ID())
 
@@ -225,9 +228,10 @@ func NewNode(
 		CTX:    ctx,
 		Cancel: cancel,
 
-		Host:    host,
-		DHT:     nil,
-		Devices: make(map[string]Device),
+		Host:              host,
+		DHT:               nil,
+		discoveredDevices: make(map[string]Device),
+		healthyDevices:    make(map[string]Device),
 	}
 	logger.Infof("Node ID: %v", n.ID())
 
@@ -351,10 +355,10 @@ func (n *Node) discoverDevice(peerInfo peer.AddrInfo, relayInfos []peer.AddrInfo
 		n.DLock.Lock()
 		device = &Device{
 			ID:      peerInfo.ID,
-			Status:  "healthy",
+			Status:  DeviceStatusHealthy,
 			SysInfo: sysInfo,
 		}
-		n.Devices[id] = *device
+		n.healthyDevices[id] = *device
 		n.DLock.Unlock()
 		return
 	}
@@ -366,7 +370,7 @@ func (n *Node) discoverDevice(peerInfo peer.AddrInfo, relayInfos []peer.AddrInfo
 		ID:     peerInfo.ID,
 		Status: DeviceStatusDiscovered,
 	}
-	n.Devices[id] = *device
+	n.discoveredDevices[id] = *device
 	n.DLock.Unlock()
 
 	// Try direct connection first
@@ -424,7 +428,8 @@ func (n *Node) discoverDevice(peerInfo peer.AddrInfo, relayInfos []peer.AddrInfo
 			}
 			if !connected {
 				n.DLock.Lock()
-				delete(n.Devices, id)
+				delete(n.discoveredDevices, id)
+				delete(n.healthyDevices, id)
 				n.DLock.Unlock()
 				err = fmt.Errorf("failed to connect to %s (direct and relay)", peerInfo.ID)
 				logger.Debugf("Connection failed: %v", err)
@@ -432,7 +437,8 @@ func (n *Node) discoverDevice(peerInfo peer.AddrInfo, relayInfos []peer.AddrInfo
 			}
 		} else {
 			n.DLock.Lock()
-			delete(n.Devices, id)
+			delete(n.discoveredDevices, id)
+			delete(n.healthyDevices, id)
 			n.DLock.Unlock()
 			err = fmt.Errorf("direct connection failed and no relays available: %v", connectErr)
 			logger.Debugf("Connection failed: %v", err)
@@ -452,7 +458,8 @@ func (n *Node) discoverDevice(peerInfo peer.AddrInfo, relayInfos []peer.AddrInfo
 			n.DHT.RefreshRoutingTable()
 		}
 		n.DLock.Lock()
-		delete(n.Devices, id)
+		delete(n.discoveredDevices, id)
+		delete(n.healthyDevices, id)
 		n.DLock.Unlock()
 		err = pingPongErr
 		return
@@ -467,7 +474,8 @@ func (n *Node) healthCheckDevice(device *Device) (err error) {
 	disconnect := func() {
 		logger.Debugf("disconnecting device %v", device.ID)
 		n.DLock.Lock()
-		delete(n.Devices, deviceId)
+		delete(n.discoveredDevices, deviceId)
+		delete(n.healthyDevices, deviceId)
 		n.DLock.Unlock()
 		if n.Bootstrapper {
 			n.Host.Peerstore().RemovePeer(device.ID)
@@ -502,7 +510,9 @@ func (n *Node) healthCheckDevice(device *Device) (err error) {
 		device.Status = DeviceStatusHealthy
 		device.SysInfo = d.SysInfo
 		device.Timestamp = time.Now().UTC()
-		n.Devices[deviceId] = *device
+		// Move from discovered to healthy
+		delete(n.discoveredDevices, deviceId)
+		n.healthyDevices[deviceId] = *device
 		n.DLock.Unlock()
 	case DeviceStatusHealthy:
 		if pingPongErr := n.Ping(device.ID); pingPongErr != nil {
@@ -513,7 +523,7 @@ func (n *Node) healthCheckDevice(device *Device) (err error) {
 
 		n.DLock.Lock()
 		device.Timestamp = time.Now().UTC()
-		n.Devices[deviceId] = *device
+		n.healthyDevices[deviceId] = *device
 		n.DLock.Unlock()
 	}
 
@@ -676,9 +686,13 @@ func (n *Node) DiscoverDevices() {
 					delete(connectedPeers, p.ID)
 				}
 
-				// Skip existing devices
+				// Skip existing devices (check both discovered and healthy)
 				id := p.ID.String()
-				if _, deviceErr := n.GetDevice(id); deviceErr == nil {
+				n.DLock.RLock()
+				_, existsHealthy := n.healthyDevices[id]
+				_, existsDiscovered := n.discoveredDevices[id]
+				n.DLock.RUnlock()
+				if existsHealthy || existsDiscovered {
 					continue
 				}
 
@@ -720,20 +734,31 @@ func (n *Node) HealthcheckDevices() {
 
 func (n *Node) UpdateDevices() {
 	var wg sync.WaitGroup
-	for _, device := range n.Devices {
+	// Check both discovered and healthy devices
+	n.DLock.RLock()
+	allDevices := make([]Device, 0, len(n.discoveredDevices)+len(n.healthyDevices))
+	for _, device := range n.discoveredDevices {
+		allDevices = append(allDevices, device)
+	}
+	for _, device := range n.healthyDevices {
+		allDevices = append(allDevices, device)
+	}
+	n.DLock.RUnlock()
+
+	for _, device := range allDevices {
 		if device.ID == n.ID() {
 			continue
 		}
 
 		wg.Add(1)
-		go func() {
+		go func(d Device) {
 			defer wg.Done()
 
-			healthCheckErr := n.healthCheckDevice(&device)
+			healthCheckErr := n.healthCheckDevice(&d)
 			if healthCheckErr != nil {
 				return
 			}
-		}()
+		}(device)
 	}
 	wg.Wait()
 }
@@ -797,12 +822,50 @@ func (n *Node) Ping(peer peer.ID) (err error) {
 	return
 }
 
+// Devices returns a map of healthy devices only
+func (n *Node) Devices() map[string]Device {
+	n.DLock.RLock()
+	defer n.DLock.RUnlock()
+	// Return a copy to prevent external modification
+	result := make(map[string]Device, len(n.healthyDevices))
+	for k, v := range n.healthyDevices {
+		result[k] = v
+	}
+	return result
+}
+
+// DiscoveredDevices returns a map of discovered (but not yet healthy) devices
+func (n *Node) DiscoveredDevices() map[string]Device {
+	n.DLock.RLock()
+	defer n.DLock.RUnlock()
+	// Return a copy to prevent external modification
+	result := make(map[string]Device, len(n.discoveredDevices))
+	for k, v := range n.discoveredDevices {
+		result[k] = v
+	}
+	return result
+}
+
+// GetDevice returns a healthy device by ID, or error if not found
 func (n *Node) GetDevice(id string) (device Device, err error) {
-	n.DLock.Lock()
-	device, exist := n.Devices[id]
-	n.DLock.Unlock()
+	n.DLock.RLock()
+	device, exist := n.healthyDevices[id]
+	n.DLock.RUnlock()
 	if !exist {
 		err = fmt.Errorf("device not exist: %v", id)
+		return
+	}
+
+	return device, nil
+}
+
+// GetDiscoveredDevice returns a discovered device by ID, or error if not found
+func (n *Node) GetDiscoveredDevice(id string) (device Device, err error) {
+	n.DLock.RLock()
+	device, exist := n.discoveredDevices[id]
+	n.DLock.RUnlock()
+	if !exist {
+		err = fmt.Errorf("discovered device not exist: %v", id)
 		return
 	}
 

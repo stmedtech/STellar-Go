@@ -57,7 +57,7 @@ func (s *APIServer) StartServer(port uint64) {
 }
 
 func (s *APIServer) GetDevices(c *gin.Context) {
-	c.IndentedJSON(http.StatusOK, s.Node.Devices)
+	c.IndentedJSON(http.StatusOK, s.Node.Devices())
 }
 
 func (s *APIServer) GetDevice(c *gin.Context) {
@@ -138,7 +138,7 @@ func (s *APIServer) GetNodeInfo(c *gin.Context) {
 		Bootstrapper:   s.Node.Bootstrapper,
 		RelayNode:      s.Node.RelayNode,
 		ReferenceToken: s.Node.ReferenceToken,
-		DevicesCount:   len(s.Node.Devices),
+		DevicesCount:   len(s.Node.Devices()),
 		Policy:         s.Node.Policy,
 	})
 }

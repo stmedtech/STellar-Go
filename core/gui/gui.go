@@ -95,7 +95,7 @@ func (app *GUIApp) showErr(err error) {
 }
 
 func (app *GUIApp) deviceSelect() *widget.RadioGroup {
-	radio := widget.NewRadioGroup(slices.Sorted(maps.Keys(app.node.Devices)), func(value string) {})
+	radio := widget.NewRadioGroup(slices.Sorted(maps.Keys(app.node.Devices())), func(value string) {})
 	return radio
 }
 
@@ -923,7 +923,7 @@ func (app *GUIApp) Loop() {
 			}
 			app.overviewContainer.Refresh()
 
-			app.devices.Set(slices.Sorted(maps.Keys(app.node.Devices)))
+			app.devices.Set(slices.Sorted(maps.Keys(app.node.Devices())))
 
 			proxies := make([]string, 0)
 			for _, proxy := range app.proxy.Proxies() {
