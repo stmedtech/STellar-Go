@@ -8,7 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"stellar/core/constant"
-	"stellar/core/protocols/compute"
+
+	// "stellar/core/protocols/compute" // Temporarily disabled (Phase 0 cleanup)
 	p2p_constant "stellar/p2p/constant"
 	"stellar/p2p/node"
 	"stellar/p2p/policy"
@@ -40,7 +41,7 @@ func (s *APIServer) StartSocket() {
 
 	listener, err := net.Listen("unix", socketPath)
 	if err != nil {
-		logger.Fatalln("Error while listening", err)
+		logger.Warnf("Error while listening", err)
 		return
 	}
 	defer os.Remove(socketPath)
@@ -364,6 +365,9 @@ func (s *APIServer) UploadFile(c *gin.Context) {
 }
 
 // Compute Protocol Endpoints
+// NOTE: Temporarily disabled as part of Phase 0 cleanup.
+// These endpoints will be replaced with new raw command execution API in later phases.
+/*
 func (s *APIServer) ListCondaEnvs(c *gin.Context) {
 	deviceId := c.Param("deviceId")
 
@@ -505,6 +509,40 @@ func (s *APIServer) ExecuteWorkspace(c *gin.Context) {
 	})
 }
 
+func (s *APIServer) CancelComputeRun(c *gin.Context) {
+	deviceId := c.Param("deviceId")
+
+	type CancelRequest struct {
+		RunID string `json:"run_id" binding:"required"`
+	}
+
+	var req CancelRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	device, err := s.Node.GetDevice(deviceId)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Device not found"})
+		return
+	}
+
+	cancelErr := compute.CancelRun(s.Node, device.ID, req.RunID)
+	if cancelErr != nil {
+		logger.Warn(cancelErr)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": cancelErr.Error()})
+		return
+	}
+
+	logger.Infof("Successfully canceled run %s on device %s", req.RunID, deviceId)
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"run_id":  req.RunID,
+	})
+}
+*/
+
 // Proxy Protocol Endpoints
 func (s *APIServer) CreateProxy(c *gin.Context) {
 	type ProxyRequest struct {
@@ -598,10 +636,12 @@ func (s *APIServer) Start() {
 	server.POST("/devices/:deviceId/files/upload", s.UploadFile)
 
 	// Compute protocol endpoints
-	server.GET("/devices/:deviceId/compute/envs", s.ListCondaEnvs)
-	server.POST("/devices/:deviceId/compute/prepare", s.PrepareCondaEnv)
-	server.POST("/devices/:deviceId/compute/execute", s.ExecuteScript)
-	server.POST("/devices/:deviceId/compute/execute-workspace", s.ExecuteWorkspace)
+	// Compute Protocol Endpoints - Temporarily disabled (Phase 0 cleanup)
+	// server.GET("/devices/:deviceId/compute/envs", s.ListCondaEnvs)
+	// server.POST("/devices/:deviceId/compute/prepare", s.PrepareCondaEnv)
+	// server.POST("/devices/:deviceId/compute/execute", s.ExecuteScript)
+	// server.POST("/devices/:deviceId/compute/execute-workspace", s.ExecuteWorkspace)
+	// server.POST("/devices/:deviceId/compute/cancel", s.CancelComputeRun)
 
 	// Proxy protocol endpoints
 	server.POST("/proxy", s.CreateProxy)
@@ -616,4 +656,9 @@ func (s *APIServer) Start() {
 	server.DELETE("/policy/whitelist", s.RemovePolicyWhiteList)
 
 	s.server = server
+}
+
+// GetRouter returns the gin.Engine router for testing purposes
+func (s *APIServer) GetRouter() *gin.Engine {
+	return s.server
 }

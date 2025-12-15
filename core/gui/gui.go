@@ -8,7 +8,9 @@ import (
 	"slices"
 	"stellar/core/constant"
 	"stellar/core/device"
-	"stellar/core/protocols/compute"
+
+	// "stellar/core/device" // Temporarily unused (Phase 0 cleanup)
+	// "stellar/core/protocols/compute" // Temporarily disabled (Phase 0 cleanup)
 	"stellar/p2p/node"
 	"stellar/p2p/protocols/file"
 	"stellar/p2p/protocols/proxy"
@@ -25,7 +27,6 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/data/binding"
 	"fyne.io/fyne/v2/dialog"
-	"fyne.io/fyne/v2/storage"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 )
@@ -355,194 +356,19 @@ func (app *GUIApp) initDevices() fyne.CanvasObject {
 		fd.Show()
 	})
 
-	prepareCondaPython := widget.NewButton("Prepare Python Env", func() {
-		deviceId, err := app.selectedDeviceId.Get()
-		if err != nil {
-			return
-		}
-		if deviceId == "" {
-			return
-		}
-
-		device, err := app.node.GetDevice(deviceId)
-		if err != nil {
-			app.showErr(err)
-			return
-		}
-
-		w := app.a.NewWindow(fmt.Sprintf("Prepare Python Environment for device %v", deviceId))
-		w.Resize(fyne.NewSize(800, 600))
-
-		envName := widget.NewEntry()
-		envVersion := widget.NewEntry()
-		envVersion.Text = "3.11"
-
-		form := &widget.Form{
-			Items: []*widget.FormItem{
-				{Text: "Environment Name", Widget: envName},
-				{Text: "Environment Version", Widget: envVersion},
-			},
-			OnSubmit: func() {
-				fd := dialog.NewFileOpen(func(reader fyne.URIReadCloser, err error) {
-					if err != nil {
-						app.showErrWithWindow(err, w)
-						return
-					}
-					if reader == nil {
-						return
-					}
-
-					fpath := reader.URI().Path()
-					form := compute.CondaPythonPreparation{
-						Env:         envName.Text,
-						Version:     envVersion.Text,
-						EnvYamlPath: fpath,
-					}
-					envPath, envErr := compute.PrepareCondaPython(app.node, device.ID, form)
-					if envErr != nil {
-						app.showErrWithWindow(envErr, w)
-						return
-					}
-
-					dialog.ShowInformation("Python Environment", envPath, w)
-				}, w)
-				fd.SetFilter(storage.NewExtensionFileFilter([]string{".yml", ".yaml"}))
-				fd.Show()
-			},
-		}
-
-		w.SetContent(form)
-		w.Show()
+	// NOTE: Temporarily disabled as part of Phase 0 cleanup - will be replaced with new raw command execution API
+	prepareCondaPython := widget.NewButton("Prepare Python Env (Disabled)", func() {
+		dialog.ShowInformation("Not Available", "Compute protocol is being refactored. This feature will be available in a future release.", nil)
 	})
 
-	executeCondaPythonScript := widget.NewButton("Execute Python Script", func() {
-		deviceId, err := app.selectedDeviceId.Get()
-		if err != nil {
-			return
-		}
-		if deviceId == "" {
-			return
-		}
-
-		device, err := app.node.GetDevice(deviceId)
-		if err != nil {
-			app.showErr(err)
-			return
-		}
-
-		w := app.a.NewWindow(fmt.Sprintf("Execute Python Script with device %v", deviceId))
-		w.Resize(fyne.NewSize(800, 600))
-
-		envs, err := compute.ListCondaPythonEnvs(app.node, device.ID)
-		if err != nil {
-			app.showErr(err)
-			return
-		}
-		options := slices.Sorted(maps.Keys(envs))
-		envName := widget.NewRadioGroup(options, func(value string) {})
-		if len(options) > 0 {
-			envName.Selected = options[0]
-		}
-
-		form := &widget.Form{
-			Items: []*widget.FormItem{
-				{Text: "Select Environment", Widget: envName},
-			},
-			OnSubmit: func() {
-				fd := dialog.NewFileOpen(func(reader fyne.URIReadCloser, err error) {
-					if err != nil {
-						app.showErrWithWindow(err, w)
-						return
-					}
-					if reader == nil {
-						return
-					}
-
-					fpath := reader.URI().Path()
-					form := compute.CondaPythonScriptExecution{
-						Env:        envName.Selected,
-						ScriptPath: fpath,
-					}
-					result, envErr := compute.ExecuteCondaPythonScript(app.node, device.ID, form)
-					if envErr != nil {
-						app.showErrWithWindow(envErr, w)
-						return
-					}
-
-					dialog.ShowInformation("Python Script Execution", result, w)
-				}, w)
-				fd.SetFilter(storage.NewExtensionFileFilter([]string{".py"}))
-				fd.Show()
-			},
-		}
-
-		w.SetContent(form)
-		w.Show()
+	// NOTE: Temporarily disabled as part of Phase 0 cleanup - will be replaced with new raw command execution API
+	executeCondaPythonScript := widget.NewButton("Execute Python Script (Disabled)", func() {
+		dialog.ShowInformation("Not Available", "Compute protocol is being refactored. This feature will be available in a future release.", nil)
 	})
 
-	executeCondaPythonWorkspace := widget.NewButton("Execute Python Workspace", func() {
-		deviceId, err := app.selectedDeviceId.Get()
-		if err != nil {
-			return
-		}
-		if deviceId == "" {
-			return
-		}
-
-		device, err := app.node.GetDevice(deviceId)
-		if err != nil {
-			app.showErr(err)
-			return
-		}
-
-		w := app.a.NewWindow(fmt.Sprintf("Execute Python Workspace with device %v", deviceId))
-		w.Resize(fyne.NewSize(800, 600))
-
-		envs, err := compute.ListCondaPythonEnvs(app.node, device.ID)
-		if err != nil {
-			app.showErr(err)
-			return
-		}
-		options := slices.Sorted(maps.Keys(envs))
-		envName := widget.NewRadioGroup(options, func(value string) {})
-		if len(options) > 0 {
-			envName.Selected = options[0]
-		}
-
-		form := &widget.Form{
-			Items: []*widget.FormItem{
-				{Text: "Select Environment", Widget: envName},
-			},
-			OnSubmit: func() {
-				fd := dialog.NewFileOpen(func(reader fyne.URIReadCloser, err error) {
-					if err != nil {
-						app.showErrWithWindow(err, w)
-						return
-					}
-					if reader == nil {
-						return
-					}
-
-					fpath := reader.URI().Path()
-					form := compute.CondaPythonWorkspaceExecution{
-						Env:           envName.Selected,
-						WorkspacePath: fpath,
-					}
-					result, envErr := compute.ExecuteCondaPythonWorkspace(app.node, device.ID, form)
-					if envErr != nil {
-						app.showErrWithWindow(envErr, w)
-						return
-					}
-
-					dialog.ShowInformation("Python Workspace Execution", result, w)
-				}, w)
-				fd.SetFilter(storage.NewExtensionFileFilter([]string{".zip"}))
-				fd.Show()
-			},
-		}
-
-		w.SetContent(form)
-		w.Show()
+	// NOTE: Temporarily disabled as part of Phase 0 cleanup - will be replaced with new raw command execution API
+	executeCondaPythonWorkspace := widget.NewButton("Execute Python Workspace (Disabled)", func() {
+		dialog.ShowInformation("Not Available", "Compute protocol is being refactored. This feature will be available in a future release.", nil)
 	})
 
 	deviceControls := container.NewHBox(filesTree, sendFile, prepareCondaPython, executeCondaPythonScript, executeCondaPythonWorkspace)

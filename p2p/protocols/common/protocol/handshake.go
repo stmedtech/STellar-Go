@@ -28,6 +28,18 @@ const (
 	HandshakeTypeFileSend         HandshakeType = "file_send"
 	HandshakeTypeFileSendResponse HandshakeType = "file_send_response"
 	HandshakeTypeFileError        HandshakeType = "file_error"
+	// Compute protocol handshake types
+	HandshakeTypeComputeHello            HandshakeType = "compute_hello"
+	HandshakeTypeComputeHelloAck         HandshakeType = "compute_hello_ack"
+	HandshakeTypeComputeRun              HandshakeType = "compute_run"
+	HandshakeTypeComputeRunResponse      HandshakeType = "compute_run_resp"
+	HandshakeTypeComputeCancel           HandshakeType = "compute_cancel"
+	HandshakeTypeComputeCancelResponse   HandshakeType = "compute_cancel_resp"
+	HandshakeTypeComputeListEnvs         HandshakeType = "compute_list_envs"
+	HandshakeTypeComputeListEnvsResponse HandshakeType = "compute_list_envs_resp"
+	HandshakeTypeComputeLogOpen          HandshakeType = "compute_log_open"
+	HandshakeTypeComputeLogClose         HandshakeType = "compute_log_close"
+	HandshakeTypeComputeError            HandshakeType = "compute_error"
 )
 
 // HandshakePacket represents a handshake message encapsulated within a Packet
@@ -89,6 +101,66 @@ type ProxyInfo struct {
 type ErrorPayload struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
+}
+
+// Compute protocol payloads
+type ComputeHelloPayload struct {
+	ClientID string `json:"client_id"`
+	Version  string `json:"version"`
+}
+
+type ComputeHelloAckPayload struct {
+	ServerID string `json:"server_id"`
+	Version  string `json:"version"`
+}
+
+type ComputeRunRequest struct {
+	RunID       string            `json:"run_id"`
+	Command     string            `json:"command"`
+	WorkingDir  string            `json:"working_dir,omitempty"`
+	Env         map[string]string `json:"env,omitempty"`
+	PayloadPath string            `json:"payload_path,omitempty"` // optional artifact path
+}
+
+type ComputeRunResponse struct {
+	RunID       string `json:"run_id"`
+	Accepted    bool   `json:"accepted"`
+	LogStreamID uint32 `json:"log_stream_id,omitempty"` // Stream ID for log data
+	Error       string `json:"error,omitempty"`
+}
+
+type ComputeCancelRequest struct {
+	RunID string `json:"run_id"`
+}
+
+type ComputeCancelResponse struct {
+	RunID   string `json:"run_id"`
+	Success bool   `json:"success"`
+	Error   string `json:"error,omitempty"`
+}
+
+type ComputeListEnvsRequest struct {
+	// Empty - no parameters needed
+}
+
+type ComputeListEnvsResponse struct {
+	Envs  map[string]string `json:"envs,omitempty"` // env name -> path
+	Error string            `json:"error,omitempty"`
+}
+
+type ComputeLogOpen struct {
+	RunID    string `json:"run_id"`
+	StreamID uint32 `json:"stream_id"`
+}
+
+type ComputeLogClose struct {
+	RunID string `json:"run_id"`
+}
+
+type ComputeErrorPayload struct {
+	RunID  string `json:"run_id,omitempty"`
+	Code   string `json:"code"`
+	Detail string `json:"detail"`
 }
 
 // FileHelloPayload is the payload for the initial file protocol hello handshake
@@ -372,5 +444,70 @@ func NewFileErrorPacket(code, message string) (*Packet, error) {
 	return NewHandshakePacket(HandshakeTypeFileError, ErrorPayload{
 		Code:    code,
 		Message: message,
+	})
+}
+
+// Compute protocol packet creation functions
+
+// NewComputeHelloPacket creates a compute_hello packet
+func NewComputeHelloPacket(version, clientID string) (*Packet, error) {
+	return NewHandshakePacket(HandshakeTypeComputeHello, ComputeHelloPayload{
+		Version:  version,
+		ClientID: clientID,
+	})
+}
+
+// NewComputeHelloAckPacket creates a compute_hello_ack packet
+func NewComputeHelloAckPacket() (*Packet, error) {
+	return NewHandshakePacket(HandshakeTypeComputeHelloAck, ComputeHelloAckPayload{})
+}
+
+// NewComputeRunPacket creates a compute_run packet
+func NewComputeRunPacket(req ComputeRunRequest) (*Packet, error) {
+	return NewHandshakePacket(HandshakeTypeComputeRun, req)
+}
+
+// NewComputeRunResponsePacket creates a compute_run_response packet
+func NewComputeRunResponsePacket(runID string, accepted bool, logStreamID uint32, errMsg string) (*Packet, error) {
+	return NewHandshakePacket(HandshakeTypeComputeRunResponse, ComputeRunResponse{
+		RunID:       runID,
+		Accepted:    accepted,
+		LogStreamID: logStreamID,
+		Error:       errMsg,
+	})
+}
+
+// NewComputeCancelPacket creates a compute_cancel packet
+func NewComputeCancelPacket(req ComputeCancelRequest) (*Packet, error) {
+	return NewHandshakePacket(HandshakeTypeComputeCancel, req)
+}
+
+// NewComputeCancelResponsePacket creates a compute_cancel_response packet
+func NewComputeCancelResponsePacket(runID string, success bool, errMsg string) (*Packet, error) {
+	return NewHandshakePacket(HandshakeTypeComputeCancelResponse, ComputeCancelResponse{
+		RunID:   runID,
+		Success: success,
+		Error:   errMsg,
+	})
+}
+
+// NewComputeListEnvsPacket creates a compute_list_envs packet
+func NewComputeListEnvsPacket() (*Packet, error) {
+	return NewHandshakePacket(HandshakeTypeComputeListEnvs, ComputeListEnvsRequest{})
+}
+
+// NewComputeListEnvsResponsePacket creates a compute_list_envs_resp packet
+func NewComputeListEnvsResponsePacket(envs map[string]string, errMsg string) (*Packet, error) {
+	return NewHandshakePacket(HandshakeTypeComputeListEnvsResponse, ComputeListEnvsResponse{
+		Envs:  envs,
+		Error: errMsg,
+	})
+}
+
+// NewComputeErrorPacket creates a compute_error packet
+func NewComputeErrorPacket(code, detail string) (*Packet, error) {
+	return NewHandshakePacket(HandshakeTypeComputeError, ComputeErrorPayload{
+		Code:   code,
+		Detail: detail,
 	})
 }
