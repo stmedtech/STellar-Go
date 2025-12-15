@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
@@ -71,7 +72,8 @@ func (p *ProxyService) getOrCreateClient() (*service.Client, error) {
 	}
 
 	// Create new stream to destination
-	stream, err := p.node.Host.NewStream(p.ctx, p.Dest, constant.StellarProxyProtocol)
+	allowCtx := network.WithAllowLimitedConn(p.ctx, string(constant.StellarProxyProtocol))
+	stream, err := p.node.Host.NewStream(allowCtx, p.Dest, constant.StellarProxyProtocol)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create stream: %w", err)
 	}

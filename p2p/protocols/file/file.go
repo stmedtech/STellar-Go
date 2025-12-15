@@ -122,9 +122,10 @@ func protocolFileEntryToFileEntry(pf protocol.FileEntry) FileEntry {
 }
 
 func List(n *node.Node, peer peer.ID, relativePath string) (files []FileEntry, err error) {
-	s, err := n.Host.NewStream(n.CTX, peer, constant.StellarFileProtocol)
+	allowCtx := network.WithAllowLimitedConn(n.CTX, string(constant.StellarFileProtocol))
+	s, err := n.Host.NewStream(allowCtx, peer, constant.StellarFileProtocol)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("open stream to %s: %w", peer, err)
 	}
 	defer s.Close()
 
@@ -153,9 +154,10 @@ func List(n *node.Node, peer peer.ID, relativePath string) (files []FileEntry, e
 }
 
 func ListFullTree(n *node.Node, peer peer.ID) (files []FileEntry, err error) {
-	s, err := n.Host.NewStream(n.CTX, peer, constant.StellarFileProtocol)
+	allowCtx := network.WithAllowLimitedConn(n.CTX, string(constant.StellarFileProtocol))
+	s, err := n.Host.NewStream(allowCtx, peer, constant.StellarFileProtocol)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("open stream to %s: %w", peer, err)
 	}
 	defer s.Close()
 
@@ -187,7 +189,8 @@ func ListFullTree(n *node.Node, peer peer.ID) (files []FileEntry, err error) {
 // Kept for reference but no longer used
 
 func Upload(n *node.Node, peer peer.ID, filePath string, saveFilePath string) (err error) {
-	s, err := n.Host.NewStream(n.CTX, peer, constant.StellarFileProtocol)
+	allowCtx := network.WithAllowLimitedConn(n.CTX, string(constant.StellarFileProtocol))
+	s, err := n.Host.NewStream(allowCtx, peer, constant.StellarFileProtocol)
 	if err != nil {
 		return err
 	}
@@ -207,7 +210,8 @@ func Upload(n *node.Node, peer peer.ID, filePath string, saveFilePath string) (e
 }
 
 func Download(n *node.Node, peer peer.ID, fileName string, destPath string) (filePath string, err error) {
-	s, err := n.Host.NewStream(n.CTX, peer, constant.StellarFileProtocol)
+	allowCtx := network.WithAllowLimitedConn(n.CTX, string(constant.StellarFileProtocol))
+	s, err := n.Host.NewStream(allowCtx, peer, constant.StellarFileProtocol)
 	if err != nil {
 		return "", err
 	}

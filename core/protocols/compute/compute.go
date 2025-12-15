@@ -381,7 +381,8 @@ func PrepareCondaPython(n *node.Node, peer peer.ID, form CondaPythonPreparation)
 	form.EnvYamlPath = envYamlPath
 	logger.Infof("compute conda python env file %s sent", form.EnvYamlPath)
 
-	s, err := n.Host.NewStream(n.CTX, peer, constant.StellarComputeProtocol)
+	allowCtx := network.WithAllowLimitedConn(n.CTX, string(constant.StellarComputeProtocol))
+	s, err := n.Host.NewStream(allowCtx, peer, constant.StellarComputeProtocol)
 	if err != nil {
 		return
 	}
@@ -428,7 +429,8 @@ func PrepareCondaPython(n *node.Node, peer peer.ID, form CondaPythonPreparation)
 }
 
 func ListCondaPythonEnvs(n *node.Node, peer peer.ID) (envs map[string]string, err error) {
-	s, err := n.Host.NewStream(n.CTX, peer, constant.StellarComputeProtocol)
+	allowCtx := network.WithAllowLimitedConn(n.CTX, string(constant.StellarComputeProtocol))
+	s, err := n.Host.NewStream(allowCtx, peer, constant.StellarComputeProtocol)
 	if err != nil {
 		return
 	}
@@ -464,7 +466,8 @@ func ExecuteCondaPythonScript(n *node.Node, peer peer.ID, form CondaPythonScript
 	form.ScriptPath = scriptPath
 	logger.Infof("execute conda python script file %s sent", form.ScriptPath)
 
-	s, err := n.Host.NewStream(n.CTX, peer, constant.StellarComputeProtocol)
+	allowCtx := network.WithAllowLimitedConn(n.CTX, string(constant.StellarComputeProtocol))
+	s, err := n.Host.NewStream(allowCtx, peer, constant.StellarComputeProtocol)
 	if err != nil {
 		return
 	}
@@ -524,7 +527,8 @@ func ExecuteCondaPythonWorkspace(n *node.Node, peer peer.ID, form CondaPythonWor
 	form.WorkspacePath = workspacePath
 	logger.Infof("execute conda python workspace file %s sent", form.WorkspacePath)
 
-	s, err := n.Host.NewStream(n.CTX, peer, constant.StellarComputeProtocol)
+	allowCtx := network.WithAllowLimitedConn(n.CTX, string(constant.StellarComputeProtocol))
+	s, err := n.Host.NewStream(allowCtx, peer, constant.StellarComputeProtocol)
 	if err != nil {
 		return
 	}

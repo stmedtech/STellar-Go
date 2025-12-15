@@ -69,7 +69,8 @@ func TestLibp2pStreamCreation(t *testing.T) {
 
 	// Create a stream - this should trigger the handler (following echo example)
 	// Use string directly like in echo example
-	stream, err := h2.NewStream(ctx, h1.ID(), proxyProtocolIDStr)
+	allowCtx := network.WithAllowLimitedConn(ctx, proxyProtocolIDStr)
+	stream, err := h2.NewStream(allowCtx, h1.ID(), proxyProtocolIDStr)
 	require.NoError(t, err, "Failed to create libp2p stream")
 	defer stream.Close()
 
@@ -122,7 +123,8 @@ func setupLibp2pNodes(t *testing.T) (host.Host, host.Host, network.Stream) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Create a stream from host2 to host1
-	stream, err := h2.NewStream(context.Background(), h1.ID(), proxyProtocolID)
+	allowCtx := network.WithAllowLimitedConn(context.Background(), proxyProtocolIDStr)
+	stream, err := h2.NewStream(allowCtx, h1.ID(), proxyProtocolID)
 	require.NoError(t, err)
 
 	return h1, h2, stream
@@ -172,7 +174,8 @@ func TestLibp2pServerAccept(t *testing.T) {
 	// Create a stream from host2 to host1 - this should trigger the server's stream handler
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	stream, err := h2.NewStream(ctx, h1.ID(), proxyProtocolIDStr)
+	allowCtx := network.WithAllowLimitedConn(ctx, proxyProtocolIDStr)
+	stream, err := h2.NewStream(allowCtx, h1.ID(), proxyProtocolIDStr)
 	require.NoError(t, err, "Failed to create libp2p stream")
 	defer stream.Close()
 
@@ -284,7 +287,8 @@ func TestLibp2pProxyOpenClose(t *testing.T) {
 	})
 
 	// Create a stream from host2 to host1
-	stream, err := h2.NewStream(context.Background(), h1.ID(), proxyProtocolIDStr)
+	allowCtx := network.WithAllowLimitedConn(context.Background(), proxyProtocolIDStr)
+	stream, err := h2.NewStream(allowCtx, h1.ID(), proxyProtocolIDStr)
 	require.NoError(t, err)
 	defer stream.Close()
 
@@ -390,7 +394,8 @@ func TestLibp2pBidirectionalCommunication(t *testing.T) {
 	})
 
 	// Create a stream from host2 to host1
-	stream, err := h2.NewStream(context.Background(), h1.ID(), proxyProtocolIDStr)
+	allowCtx := network.WithAllowLimitedConn(context.Background(), proxyProtocolIDStr)
+	stream, err := h2.NewStream(allowCtx, h1.ID(), proxyProtocolIDStr)
 	require.NoError(t, err)
 	defer stream.Close()
 
@@ -534,7 +539,8 @@ func TestLibp2pMultipleProxies(t *testing.T) {
 	})
 
 	// Create a stream from host2 to host1
-	stream, err := h2.NewStream(context.Background(), h1.ID(), proxyProtocolIDStr)
+	allowCtx := network.WithAllowLimitedConn(context.Background(), proxyProtocolIDStr)
+	stream, err := h2.NewStream(allowCtx, h1.ID(), proxyProtocolIDStr)
 	require.NoError(t, err)
 	defer stream.Close()
 
@@ -662,7 +668,8 @@ func TestLibp2pConcurrentProxies(t *testing.T) {
 	})
 
 	// Create a stream from host2 to host1
-	stream, err := h2.NewStream(context.Background(), h1.ID(), proxyProtocolIDStr)
+	allowCtx := network.WithAllowLimitedConn(context.Background(), proxyProtocolIDStr)
+	stream, err := h2.NewStream(allowCtx, h1.ID(), proxyProtocolIDStr)
 	require.NoError(t, err)
 	defer stream.Close()
 
