@@ -95,24 +95,58 @@ func (sr *streamReader) Read(p []byte) (n int, err error) {
 	if len(sr.buffer) > 0 {
 		n = copy(p, sr.buffer)
 		sr.buffer = sr.buffer[n:]
-		closed := sr.closed
 		sr.mu.Unlock()
-		if closed {
-			return 0, io.EOF
-		}
+		// Important: if we read any bytes, return them even if the stream
+		// has been marked closed. The next Read will return EOF once the
+		// buffer is drained.
 		return n, nil
 	}
 	closed := sr.closed
 	sr.mu.Unlock()
 
+	// If we've been marked closed, we may still have buffered frames in dataChan.
+	// Drain any immediately available data first; only return EOF when there is
+	// no buffered data remaining.
 	if closed {
-		return 0, io.EOF
+		select {
+		case data, ok := <-sr.dataChan:
+			if !ok || len(data) == 0 {
+				return 0, io.EOF
+			}
+			n = copy(p, data)
+			if n < len(data) {
+				sr.mu.Lock()
+				sr.buffer = data[n:]
+				sr.mu.Unlock()
+			}
+			return n, nil
+		default:
+			return 0, io.EOF
+		}
+	}
+
+	// Prefer data over error to avoid races where an EOF/error is delivered
+	// while there is still buffered data waiting to be read.
+	select {
+	case data, ok := <-sr.dataChan:
+		if !ok || len(data) == 0 {
+			return 0, io.EOF
+		}
+		n = copy(p, data)
+		if n < len(data) {
+			// Buffer the remainder (need lock for this)
+			sr.mu.Lock()
+			sr.buffer = data[n:]
+			sr.mu.Unlock()
+		}
+		return n, nil
+	default:
 	}
 
 	// Wait for data or error (without holding lock)
 	select {
-	case data := <-sr.dataChan:
-		if len(data) == 0 {
+	case data, ok := <-sr.dataChan:
+		if !ok || len(data) == 0 {
 			return 0, io.EOF
 		}
 		n = copy(p, data)
@@ -124,6 +158,9 @@ func (sr *streamReader) Read(p []byte) (n int, err error) {
 		}
 		return n, nil
 	case err := <-sr.errChan:
+		if err == nil {
+			return 0, io.EOF
+		}
 		return 0, err
 	}
 }
@@ -134,6 +171,14 @@ func (sr *streamReader) WriteData(data []byte) {
 	sr.mu.Unlock()
 
 	if closed {
+		return
+	}
+
+	// Zero-length payload is treated as an EOF/remote stream close signal.
+	// This allows one side to propagate Close() to the peer without requiring
+	// out-of-band coordination.
+	if len(data) == 0 {
+		sr.Close()
 		return
 	}
 
@@ -166,21 +211,9 @@ func (sr *streamReader) Close() {
 	sr.mu.Unlock()
 
 	if !wasClosed {
-		// Send EOF to error channel to unblock any waiting Read() calls
-		// This must be done before closing channels to ensure the select in Read() sees it
-		select {
-		case sr.errChan <- io.EOF:
-		default:
-			// Channel might be full or already have an error, that's OK
-			// Closing dataChan will still unblock the select
-		}
-
-		// Close dataChan - reading from a closed channel returns zero value immediately
-		// This will cause the select in Read() to return with len(data) == 0, which returns EOF
+		// Close dataChan - reading from a closed channel returns immediately.
+		// The Read() path treats a closed channel as EOF.
 		close(sr.dataChan)
-
-		// Close errChan - this is safe because we already sent EOF above
-		close(sr.errChan)
 	}
 }
 
@@ -214,9 +247,13 @@ func (sw *streamWriter) Write(p []byte) (n int, err error) {
 }
 
 func (sw *streamWriter) Close() {
+	// Best-effort: send a zero-length frame to signal EOF/remote close.
+	// Ignore errors (the underlying connection may already be closed).
+	_ = sw.writeFn(sw.id, nil)
+
 	sw.mu.Lock()
-	defer sw.mu.Unlock()
 	sw.closed = true
+	sw.mu.Unlock()
 }
 
 // Multiplexer handles connection multiplexing
@@ -402,11 +439,26 @@ func (m *Multiplexer) writeData(streamID uint32, data []byte) error {
 	binary.BigEndian.PutUint32(header[0:4], streamID)
 	binary.BigEndian.PutUint32(header[4:8], uint32(len(data)))
 
-	if _, err := m.conn.Write(header); err != nil {
+	// net.Conn Write is allowed to return short writes; ensure full write.
+	writeFull := func(p []byte) error {
+		for len(p) > 0 {
+			n, err := m.conn.Write(p)
+			if err != nil {
+				return err
+			}
+			if n <= 0 {
+				return io.ErrShortWrite
+			}
+			p = p[n:]
+		}
+		return nil
+	}
+
+	if err := writeFull(header); err != nil {
 		return err
 	}
 
-	if _, err := m.conn.Write(data); err != nil {
+	if err := writeFull(data); err != nil {
 		return err
 	}
 

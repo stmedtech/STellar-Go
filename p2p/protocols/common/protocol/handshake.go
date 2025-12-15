@@ -29,19 +29,15 @@ const (
 	HandshakeTypeFileSendResponse HandshakeType = "file_send_response"
 	HandshakeTypeFileError        HandshakeType = "file_error"
 	// Compute protocol handshake types
-	HandshakeTypeComputeHello            HandshakeType = "compute_hello"
-	HandshakeTypeComputeHelloAck         HandshakeType = "compute_hello_ack"
-	HandshakeTypeComputeRun              HandshakeType = "compute_run"
-	HandshakeTypeComputeRunResponse      HandshakeType = "compute_run_resp"
-	HandshakeTypeComputeCancel           HandshakeType = "compute_cancel"
-	HandshakeTypeComputeCancelResponse   HandshakeType = "compute_cancel_resp"
-	HandshakeTypeComputeListEnvs         HandshakeType = "compute_list_envs"
-	HandshakeTypeComputeListEnvsResponse HandshakeType = "compute_list_envs_resp"
-	HandshakeTypeComputeLogOpen          HandshakeType = "compute_log_open"
-	HandshakeTypeComputeLogClose         HandshakeType = "compute_log_close"
-	HandshakeTypeComputeStatus           HandshakeType = "compute_status"
-	HandshakeTypeComputeStatusResponse   HandshakeType = "compute_status_resp"
-	HandshakeTypeComputeError            HandshakeType = "compute_error"
+	HandshakeTypeComputeHello          HandshakeType = "compute_hello"
+	HandshakeTypeComputeHelloAck       HandshakeType = "compute_hello_ack"
+	HandshakeTypeComputeRun            HandshakeType = "compute_run"
+	HandshakeTypeComputeRunResponse    HandshakeType = "compute_run_resp"
+	HandshakeTypeComputeCancel         HandshakeType = "compute_cancel"
+	HandshakeTypeComputeCancelResponse HandshakeType = "compute_cancel_resp"
+	HandshakeTypeComputeStatus         HandshakeType = "compute_status"
+	HandshakeTypeComputeStatusResponse HandshakeType = "compute_status_resp"
+	HandshakeTypeComputeError          HandshakeType = "compute_error"
 )
 
 // HandshakePacket represents a handshake message encapsulated within a Packet
@@ -142,24 +138,6 @@ type ComputeCancelResponse struct {
 	RunID   string `json:"run_id"`
 	Success bool   `json:"success"`
 	Error   string `json:"error,omitempty"`
-}
-
-type ComputeListEnvsRequest struct {
-	// Empty - no parameters needed
-}
-
-type ComputeListEnvsResponse struct {
-	Envs  map[string]string `json:"envs,omitempty"` // env name -> path
-	Error string            `json:"error,omitempty"`
-}
-
-type ComputeLogOpen struct {
-	RunID    string `json:"run_id"`
-	StreamID uint32 `json:"stream_id"`
-}
-
-type ComputeLogClose struct {
-	RunID string `json:"run_id"`
 }
 
 type ComputeStatusRequest struct {
@@ -509,19 +487,6 @@ func NewComputeCancelResponsePacket(runID string, success bool, errMsg string) (
 		RunID:   runID,
 		Success: success,
 		Error:   errMsg,
-	})
-}
-
-// NewComputeListEnvsPacket creates a compute_list_envs packet
-func NewComputeListEnvsPacket() (*Packet, error) {
-	return NewHandshakePacket(HandshakeTypeComputeListEnvs, ComputeListEnvsRequest{})
-}
-
-// NewComputeListEnvsResponsePacket creates a compute_list_envs_resp packet
-func NewComputeListEnvsResponsePacket(envs map[string]string, errMsg string) (*Packet, error) {
-	return NewHandshakePacket(HandshakeTypeComputeListEnvsResponse, ComputeListEnvsResponse{
-		Envs:  envs,
-		Error: errMsg,
 	})
 }
 

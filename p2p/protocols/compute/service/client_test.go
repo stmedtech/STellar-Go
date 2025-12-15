@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -16,97 +19,326 @@ import (
 
 // TestClient_Run_Success tests successful command execution
 func TestClient_Run_Success(t *testing.T) {
-	t.Skip("Requires full server/client setup with multiplexer")
+	p := startComputePair(t)
+
+	var cmd string
+	var args []string
+	if runtime.GOOS == "windows" {
+		cmd = "cmd"
+		args = []string{"/c", "echo", "hello"}
+	} else {
+		cmd = "echo"
+		args = []string{"hello"}
+	}
+
+	h, err := p.client.Run(context.Background(), RunRequest{RunID: "client-run-success", Command: cmd, Args: args})
+	require.NoError(t, err)
+	require.NotNil(t, h)
+	require.NotNil(t, h.Stdin)
+	require.NotNil(t, h.Stdout)
+	require.NotNil(t, h.Stderr)
+	require.NotNil(t, h.Log)
+
+	require.NoError(t, h.Stdin.Close())
+	out, err := io.ReadAll(h.Stdout)
+	require.NoError(t, err)
+	assert.Contains(t, string(out), "hello")
+
+	require.NoError(t, <-h.Done)
+	assert.Equal(t, 0, <-h.ExitCode)
 }
 
 // TestClient_Run_StreamAccess tests stream access
 func TestClient_Run_StreamAccess(t *testing.T) {
-	t.Skip("Requires full server/client setup")
+	p := startComputePair(t)
+
+	var cmd string
+	var args []string
+	if runtime.GOOS == "windows" {
+		cmd = "cmd"
+		args = []string{"/c", "echo", "x"}
+	} else {
+		cmd = "echo"
+		args = []string{"x"}
+	}
+
+	h, err := p.client.Run(context.Background(), RunRequest{RunID: "client-stream-access", Command: cmd, Args: args})
+	require.NoError(t, err)
+	require.NotNil(t, h)
+
+	assert.NotNil(t, h.Stdin)
+	assert.NotNil(t, h.Stdout)
+	assert.NotNil(t, h.Stderr)
+	assert.NotNil(t, h.Log)
 }
 
 // TestClient_Run_StdinWrite tests writing to stdin
 func TestClient_Run_StdinWrite(t *testing.T) {
-	t.Skip("Requires full server/client setup")
+	p := startComputePair(t)
+	requireNonWindows(t)
+
+	h, err := p.client.Run(context.Background(), RunRequest{RunID: "client-stdin-write", Command: "cat"})
+	require.NoError(t, err)
+
+	_, err = h.Stdin.Write([]byte("abc\n"))
+	require.NoError(t, err)
+	require.NoError(t, h.Stdin.Close())
+
+	out, err := io.ReadAll(h.Stdout)
+	require.NoError(t, err)
+	assert.Contains(t, string(out), "abc\n")
+
+	require.NoError(t, <-h.Done)
+	assert.Equal(t, 0, <-h.ExitCode)
 }
 
 // TestClient_Run_StdoutRead tests reading from stdout
 func TestClient_Run_StdoutRead(t *testing.T) {
-	t.Skip("Requires full server/client setup")
+	p := startComputePair(t)
+
+	var cmd string
+	var args []string
+	if runtime.GOOS == "windows" {
+		cmd = "cmd"
+		args = []string{"/c", "echo", "hello"}
+	} else {
+		cmd = "echo"
+		args = []string{"hello"}
+	}
+
+	h, err := p.client.Run(context.Background(), RunRequest{RunID: "client-stdout-read", Command: cmd, Args: args})
+	require.NoError(t, err)
+	require.NoError(t, h.Stdin.Close())
+
+	out, err := io.ReadAll(h.Stdout)
+	require.NoError(t, err)
+	assert.Contains(t, string(out), "hello")
+
+	require.NoError(t, <-h.Done)
+	assert.Equal(t, 0, <-h.ExitCode)
 }
 
 // TestClient_Run_StderrRead tests reading from stderr
 func TestClient_Run_StderrRead(t *testing.T) {
-	t.Skip("Requires full server/client setup")
+	p := startComputePair(t)
+	requireNonWindows(t)
+
+	h, err := p.client.Run(context.Background(), RunRequest{
+		RunID:   "client-stderr-read",
+		Command: "sh",
+		Args:    []string{"-c", "echo err-msg 1>&2"},
+	})
+	require.NoError(t, err)
+	require.NoError(t, h.Stdin.Close())
+
+	errOut, err := io.ReadAll(h.Stderr)
+	require.NoError(t, err)
+	assert.Contains(t, string(errOut), "err-msg")
+
+	require.NoError(t, <-h.Done)
+	assert.Equal(t, 0, <-h.ExitCode)
 }
 
 // TestClient_Run_LogRead tests reading from log stream
 func TestClient_Run_LogRead(t *testing.T) {
-	t.Skip("Requires full server/client setup")
+	p := startComputePair(t)
+	requireNonWindows(t)
+
+	h, err := p.client.Run(context.Background(), RunRequest{
+		RunID:   "client-log-read",
+		Command: "sh",
+		Args:    []string{"-c", "echo out && echo err 1>&2"},
+	})
+	require.NoError(t, err)
+	require.NoError(t, h.Stdin.Close())
+
+	logBytes, err := io.ReadAll(h.Log)
+	require.NoError(t, err)
+	require.NotEmpty(t, logBytes)
+	assert.Contains(t, string(logBytes), "out")
+	assert.Contains(t, string(logBytes), "err")
+
+	_, _ = io.ReadAll(h.Stdout)
+	_, _ = io.ReadAll(h.Stderr)
+	<-h.Done
+	<-h.ExitCode
 }
 
 // TestClient_Run_Rejected tests handling rejected requests
 func TestClient_Run_Rejected(t *testing.T) {
-	t.Skip("Requires full server/client setup")
+	p := startComputePair(t)
+
+	h, err := p.client.Run(context.Background(), RunRequest{RunID: "client-reject", Command: ""})
+	require.Error(t, err)
+	require.Nil(t, h)
 }
 
 // TestClient_Run_InvalidRequest tests handling invalid requests
 func TestClient_Run_InvalidRequest(t *testing.T) {
-	// Test with empty command
-	// This will fail validation in Run method
-	// But we can't test without a real connection
-	t.Skip("Requires full server/client setup")
+	p := startComputePair(t)
+
+	h, err := p.client.Run(context.Background(), RunRequest{RunID: "client-invalid", Command: ""})
+	require.Error(t, err)
+	require.Nil(t, h)
 }
 
-// TestClient_Run_Timeout tests request timeout
+// TestClient_Run_Timeout tests context cancellation behavior
 func TestClient_Run_Timeout(t *testing.T) {
-	t.Skip("Requires full server/client setup")
+	p := startComputePair(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	h, err := p.client.Run(ctx, RunRequest{RunID: "client-ctx-cancel", Command: "echo", Args: []string{"x"}})
+	// Depending on where cancellation hits (before/after request send), Run may error or return a handle
+	// that is immediately completed. Both are acceptable.
+	if err != nil {
+		require.Nil(t, h)
+		return
+	}
+	require.NotNil(t, h)
+	<-h.Done
 }
 
 // TestClient_Cancel_Success tests successful cancellation
 func TestClient_Cancel_Success(t *testing.T) {
-	t.Skip("Requires full server/client setup")
+	p := startComputePair(t)
+	requireNonWindows(t)
+
+	h, err := p.client.Run(context.Background(), RunRequest{
+		RunID:   "client-cancel-success",
+		Command: "sleep",
+		Args:    []string{"1000"},
+	})
+	require.NoError(t, err)
+	require.NoError(t, h.Stdin.Close())
+
+	require.NoError(t, h.Cancel())
+	doneErr := <-h.Done
+	require.Error(t, doneErr)
+	<-h.ExitCode
 }
 
 // TestClient_Cancel_InvalidRunID tests cancellation with invalid run ID
 func TestClient_Cancel_InvalidRunID(t *testing.T) {
-	// Test validation
-	// Empty runID should fail
-	// But we can't test without a real connection
-	t.Skip("Requires full server/client setup")
+	p := startComputePair(t)
+
+	err := p.client.Cancel(context.Background(), "")
+	require.Error(t, err)
+	assert.Contains(t, strings.ToLower(err.Error()), "run_id")
 }
 
-// TestClient_Cancel_Timeout tests cancellation timeout
+// TestClient_Cancel_Timeout tests cancellation request context cancellation behavior
 func TestClient_Cancel_Timeout(t *testing.T) {
-	t.Skip("Requires full server/client setup")
+	p := startComputePair(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := p.client.Cancel(ctx, "some-run")
+	require.Error(t, err)
 }
 
 // TestClient_Status_Success tests successful status query
 func TestClient_Status_Success(t *testing.T) {
-	t.Skip("Requires full server/client setup")
+	p := startComputePair(t)
+	requireNonWindows(t)
+
+	h, err := p.client.Run(context.Background(), RunRequest{RunID: "client-status", Command: "cat"})
+	require.NoError(t, err)
+
+	st, err := p.client.Status(context.Background(), h.RunID)
+	require.NoError(t, err)
+	assert.Equal(t, "running", st.Status)
+
+	require.NoError(t, h.Stdin.Close())
+	_, _ = io.ReadAll(h.Stdout)
+	_, _ = io.ReadAll(h.Stderr)
+	require.NoError(t, <-h.Done)
+	assert.Equal(t, 0, <-h.ExitCode)
+
+	st2, err := p.client.Status(context.Background(), h.RunID)
+	require.NoError(t, err)
+	assert.Equal(t, "completed", st2.Status)
+	require.NotNil(t, st2.ExitCode)
+	assert.Equal(t, 0, *st2.ExitCode)
 }
 
 // TestClient_Status_InvalidRunID tests status query with invalid run ID
 func TestClient_Status_InvalidRunID(t *testing.T) {
-	// Test validation
-	// Empty runID should fail
-	// But we can't test without a real connection
-	t.Skip("Requires full server/client setup")
+	p := startComputePair(t)
+
+	_, err := p.client.Status(context.Background(), "")
+	require.Error(t, err)
+	assert.Contains(t, strings.ToLower(err.Error()), "run_id")
 }
 
-// TestClient_Status_Timeout tests status query timeout
+// TestClient_Status_Timeout tests status request context cancellation behavior
 func TestClient_Status_Timeout(t *testing.T) {
-	t.Skip("Requires full server/client setup")
+	p := startComputePair(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := p.client.Status(ctx, "some-run")
+	require.Error(t, err)
 }
 
 // TestClient_ConcurrentRuns tests concurrent run requests
 func TestClient_ConcurrentRuns(t *testing.T) {
-	t.Skip("Requires full server/client setup")
+	p := startComputePair(t)
+
+	var cmd string
+	var args []string
+	if runtime.GOOS == "windows" {
+		cmd = "cmd"
+		args = []string{"/c", "echo", "hello"}
+	} else {
+		cmd = "echo"
+		args = []string{"hello"}
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			h, err := p.client.Run(context.Background(), RunRequest{
+				RunID:   "client-concurrent-" + strconv.Itoa(i),
+				Command: cmd,
+				Args:    args,
+			})
+			require.NoError(t, err)
+			_ = h.Stdin.Close()
+			_, _ = io.ReadAll(h.Stdout)
+			_, _ = io.ReadAll(h.Stderr)
+			<-h.Done
+			<-h.ExitCode
+		}(i)
+	}
+	wg.Wait()
 }
 
 // TestClient_StreamErrors tests stream error handling
 func TestClient_StreamErrors(t *testing.T) {
-	t.Skip("Requires full server/client setup")
+	p := startComputePair(t)
+	requireNonWindows(t)
+
+	h, err := p.client.Run(context.Background(), RunRequest{
+		RunID:   "client-stream-errors",
+		Command: "sleep",
+		Args:    []string{"1000"},
+	})
+	require.NoError(t, err)
+	_ = h.Stdin.Close()
+
+	// Closing the server should complete the client handle with an error (canceled/closed).
+	require.NoError(t, p.server.Close())
+	doneErr := <-h.Done
+	require.Error(t, doneErr)
 }
+
+// (no extra helpers)
 
 // TestClient_ConnectionErrors tests connection error handling
 func TestClient_ConnectionErrors(t *testing.T) {

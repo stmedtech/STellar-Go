@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"time"
 )
 
 // RawExecutor implements the Executor interface using os/exec
@@ -49,27 +48,23 @@ func (e *RawExecutor) ExecuteRaw(ctx context.Context, req RawExecutionRequest) (
 		return nil, fmt.Errorf("failed to create stdin pipe: %w", err)
 	}
 
-	stdoutPipe, err := cmd.StdoutPipe()
-	if err != nil {
-		cancel()
-		stdinPipe.Close()
-		return nil, fmt.Errorf("failed to create stdout pipe: %w", err)
-	}
-
-	stderrPipe, err := cmd.StderrPipe()
-	if err != nil {
-		cancel()
-		stdinPipe.Close()
-		stdoutPipe.Close()
-		return nil, fmt.Errorf("failed to create stderr pipe: %w", err)
-	}
+	// IMPORTANT:
+	// Using cmd.StdoutPipe/StderrPipe while also calling cmd.Wait() concurrently can lead to
+	// truncated output because os/exec may close the pipe as part of Wait().
+	// To guarantee correct streaming, we use io.Pipe and close the writers after Wait completes.
+	stdoutR, stdoutW := io.Pipe()
+	stderrR, stderrW := io.Pipe()
+	cmd.Stdout = stdoutW
+	cmd.Stderr = stderrW
 
 	// Start command
 	if err := cmd.Start(); err != nil {
 		cancel()
 		stdinPipe.Close()
-		stdoutPipe.Close()
-		stderrPipe.Close()
+		_ = stdoutW.Close()
+		_ = stdoutR.Close()
+		_ = stderrW.Close()
+		_ = stderrR.Close()
 		return nil, fmt.Errorf("failed to start command: %w", err)
 	}
 
@@ -80,6 +75,10 @@ func (e *RawExecutor) ExecuteRaw(ctx context.Context, req RawExecutionRequest) (
 	// Start goroutine to wait for command completion
 	go func() {
 		err := cmd.Wait()
+		// Ensure stdout/stderr pipes are closed to unblock readers
+		_ = stdoutW.Close()
+		_ = stderrW.Close()
+
 		if err != nil {
 			// Try to extract exit code from error
 			if exitError, ok := err.(*exec.ExitError); ok {
@@ -111,8 +110,8 @@ func (e *RawExecutor) ExecuteRaw(ctx context.Context, req RawExecutionRequest) (
 	execution := &RawExecution{
 		RunID:    generateRunID(),
 		Stdin:    stdinPipe,
-		Stdout:   stdoutPipe,
-		Stderr:   stderrPipe,
+		Stdout:   stdoutR,
+		Stderr:   stderrR,
 		Done:     done,
 		ExitCode: exitCode,
 		Cancel: func() {
@@ -121,35 +120,14 @@ func (e *RawExecutor) ExecuteRaw(ctx context.Context, req RawExecutionRequest) (
 			if cmd.Process != nil {
 				cmd.Process.Kill()
 			}
+			// Ensure readers are unblocked
+			_ = stdoutW.Close()
+			_ = stderrW.Close()
 		},
 	}
 
 	return execution, nil
 }
 
-// WaitForCompletion waits for execution to complete and returns the exit code
-func WaitForCompletion(execution *RawExecution, timeout time.Duration) (int, error) {
-	select {
-	case err := <-execution.Done:
-		if err != nil {
-			// Check if it's an exit error
-			if exitError, ok := err.(*exec.ExitError); ok {
-				return exitError.ExitCode(), nil
-			}
-			return -1, err
-		}
-		// Get exit code
-		select {
-		case code := <-execution.ExitCode:
-			return code, nil
-		case <-time.After(timeout):
-			return -1, fmt.Errorf("timeout waiting for exit code")
-		}
-	case code := <-execution.ExitCode:
-		// Exit code received before done (shouldn't happen, but handle it)
-		<-execution.Done
-		return code, nil
-	case <-time.After(timeout):
-		return -1, fmt.Errorf("timeout waiting for execution to complete")
-	}
-}
+// NOTE: We intentionally do not provide a time-based helper like WaitForCompletion here.
+// Tests should be deterministic and rely on `go test -timeout ...` as the safety net.

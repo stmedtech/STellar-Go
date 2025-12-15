@@ -75,6 +75,46 @@ func (s *Server) Serve(ctx context.Context) error {
 	return s.BaseServer.Serve(ctx)
 }
 
+// Close shuts down the server and cancels any active runs.
+// This is NOT backward-compatible with any legacy compute behavior: we always force-stop
+// running processes to keep tests and protocol behavior deterministic.
+func (s *Server) Close() error {
+	if s == nil {
+		return nil
+	}
+
+	// Snapshot runs
+	s.runsMu.RLock()
+	runs := make([]*RunInfo, 0, len(s.runs))
+	for _, ri := range s.runs {
+		runs = append(runs, ri)
+	}
+	s.runsMu.RUnlock()
+
+	// Force-cancel running processes and emit a terminal status event best-effort.
+	for _, ri := range runs {
+		if ri == nil {
+			continue
+		}
+		ri.mu.Lock()
+		if ri.Status == RunStatusRunning {
+			ri.Status = RunStatusCanceled
+			now := time.Now()
+			ri.EndTime = &now
+			// cancel process
+			if ri.CancelFunc != nil {
+				ri.CancelFunc()
+			}
+			// best-effort: notify client
+			_ = s.sendStatusSuccess(ri.RunID, ri.Status, ri.ExitCode, ri.StartTime, ri.EndTime)
+		}
+		ri.mu.Unlock()
+	}
+
+	// Close underlying base server (control plane + multiplexer)
+	return s.BaseServer.Close()
+}
+
 // computeHandshakeHandler implements server-side handshake handling for compute protocol
 type computeHandshakeHandler struct{}
 
@@ -218,17 +258,31 @@ func (s *Server) handleRun(ctx context.Context, packet *protocol.HandshakePacket
 	s.runs[req.RunID] = runInfo
 	s.runsMu.Unlock()
 
-	// Send success response
+	// Start stream forwarding goroutines BEFORE sending response
+	// This ensures they're ready to forward data as soon as the command produces output
+	var ioWg sync.WaitGroup
+	ioWg.Add(2)
+	go func() {
+		defer ioWg.Done()
+		s.forwardStdout(execution, stdoutStream, logStream, req.RunID)
+	}()
+	go func() {
+		defer ioWg.Done()
+		s.forwardStderr(execution, stderrStream, logStream, req.RunID)
+	}()
+	// Close log stream once stdout/stderr forwarding is done so the client can `io.ReadAll` it deterministically.
+	go func() {
+		ioWg.Wait()
+		_ = logStream.Close()
+	}()
+	go s.monitorExecution(req.RunID, execution)
+
+	// Send success response after starting forwarding goroutines
 	if err := s.sendRunSuccess(req.RunID, stdinID, stdoutID, stderrID, logID); err != nil {
 		// Cleanup on error
 		s.cleanupRun(req.RunID)
 		return err
 	}
-
-	// Start stream forwarding goroutines
-	go s.forwardStdout(execution, stdoutStream, logStream, req.RunID)
-	go s.forwardStderr(execution, stderrStream, logStream, req.RunID)
-	go s.monitorExecution(req.RunID, execution)
 
 	return nil
 }
@@ -267,6 +321,9 @@ func (s *Server) handleCancel(packet *protocol.HandshakePacket) error {
 	now := time.Now()
 	runInfo.EndTime = &now
 	runInfo.mu.Unlock()
+
+	// Best-effort: also emit a status event so the client can complete deterministically without polling.
+	_ = s.sendStatusSuccess(req.RunID, RunStatusCanceled, runInfo.ExitCode, runInfo.StartTime, runInfo.EndTime)
 
 	return s.sendCancelSuccess(req.RunID)
 }
@@ -318,12 +375,15 @@ func (s *Server) forwardStdout(execution *RawExecution, stream io.WriteCloser, l
 			s.writeLogEntry(logStream, runID, "stdout", string(buf[:n]))
 		}
 		if err != nil {
-			if err != io.EOF {
-				// Log error
-				s.writeLogEntry(logStream, runID, "error", fmt.Sprintf("stdout read error: %v", err))
+			if err == io.EOF {
+				// Normal end of stream
+				return
 			}
+			// Log error
+			s.writeLogEntry(logStream, runID, "error", fmt.Sprintf("stdout read error: %v", err))
 			return
 		}
+		// If n == 0 and err == nil, continue reading (shouldn't happen but be safe)
 	}
 }
 
@@ -345,12 +405,15 @@ func (s *Server) forwardStderr(execution *RawExecution, stream io.WriteCloser, l
 			s.writeLogEntry(logStream, runID, "stderr", string(buf[:n]))
 		}
 		if err != nil {
-			if err != io.EOF {
-				// Log error
-				s.writeLogEntry(logStream, runID, "error", fmt.Sprintf("stderr read error: %v", err))
+			if err == io.EOF {
+				// Normal end of stream
+				return
 			}
+			// Log error
+			s.writeLogEntry(logStream, runID, "error", fmt.Sprintf("stderr read error: %v", err))
 			return
 		}
+		// If n == 0 and err == nil, continue reading (shouldn't happen but be safe)
 	}
 }
 
@@ -361,11 +424,8 @@ func (s *Server) monitorExecution(runID string, execution *RawExecution) {
 
 	// Get exit code
 	var exitCode *int
-	select {
-	case code := <-execution.ExitCode:
+	if code, ok := <-execution.ExitCode; ok {
 		exitCode = &code
-	case <-time.After(1 * time.Second):
-		// Timeout getting exit code
 	}
 
 	// Update run info
@@ -388,7 +448,15 @@ func (s *Server) monitorExecution(runID string, execution *RawExecution) {
 		runInfo.EndTime = &now
 		runInfo.ExitCode = exitCode
 	}
+	// Snapshot for event emission
+	status := runInfo.Status
+	startTime := runInfo.StartTime
+	endTime := runInfo.EndTime
+	code := runInfo.ExitCode
 	runInfo.mu.Unlock()
+
+	// Best-effort: emit a terminal status event (unmatched packets are delivered to eventsHandler on client side).
+	_ = s.sendStatusSuccess(runID, status, code, startTime, endTime)
 }
 
 // writeLogEntry writes a log entry to the log stream

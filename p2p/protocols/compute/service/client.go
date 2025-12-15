@@ -14,6 +14,86 @@ import (
 // Client handles client-side compute operations
 type Client struct {
 	*base_service.BaseClient
+	events *computeEventsHandler
+}
+
+// computeEventsHandler receives unsolicited control-plane packets (i.e. packets that did not match
+// a pending request) and completes runs without polling.
+type computeEventsHandler struct {
+	mu      sync.Mutex
+	handles map[string]*RawExecutionHandle
+}
+
+func newComputeEventsHandler() *computeEventsHandler {
+	return &computeEventsHandler{handles: make(map[string]*RawExecutionHandle)}
+}
+
+func (h *computeEventsHandler) register(handle *RawExecutionHandle) {
+	if h == nil || handle == nil || handle.RunID == "" {
+		return
+	}
+	h.mu.Lock()
+	h.handles[handle.RunID] = handle
+	h.mu.Unlock()
+}
+
+func (h *computeEventsHandler) unregister(runID string) {
+	if h == nil || runID == "" {
+		return
+	}
+	h.mu.Lock()
+	delete(h.handles, runID)
+	h.mu.Unlock()
+}
+
+func (h *computeEventsHandler) completeAll(err error) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	handles := make([]*RawExecutionHandle, 0, len(h.handles))
+	for _, v := range h.handles {
+		handles = append(handles, v)
+	}
+	h.handles = make(map[string]*RawExecutionHandle)
+	h.mu.Unlock()
+
+	for _, handle := range handles {
+		handle.complete(err, -1)
+	}
+}
+
+func (h *computeEventsHandler) HandleEvent(packet *protocol.HandshakePacket) {
+	if h == nil || packet == nil {
+		return
+	}
+	if packet.Type != protocol.HandshakeTypeComputeStatusResponse {
+		return
+	}
+
+	var status protocol.ComputeStatusResponse
+	if err := packet.UnmarshalPayload(&status); err != nil {
+		return
+	}
+	if status.RunID == "" {
+		return
+	}
+
+	h.mu.Lock()
+	handle := h.handles[status.RunID]
+	h.mu.Unlock()
+	if handle == nil {
+		return
+	}
+
+	switch status.Status {
+	case string(RunStatusCompleted), string(RunStatusFailed), string(RunStatusCanceled):
+		// Complete handle once.
+		handle.completeFromStatus(status)
+		h.unregister(status.RunID)
+	default:
+		// running/unknown: ignore
+	}
 }
 
 // NewClient creates a new compute client with automatic multiplexer setup
@@ -23,17 +103,30 @@ func NewClient(clientID string, conn io.ReadWriteCloser) *Client {
 	}
 
 	hello := &computeHelloHandler{}
-	base := base_service.NewBaseClient(clientID, conn, hello, nil)
+	events := newComputeEventsHandler()
+	base := base_service.NewBaseClient(clientID, conn, hello, events)
 	if base == nil {
 		return nil
 	}
 
-	return &Client{BaseClient: base}
+	return &Client{BaseClient: base, events: events}
 }
 
 // Connect performs handshake and establishes connection
 func (c *Client) Connect() error {
 	return c.BaseClient.Connect()
+}
+
+// Close closes the client and completes any active handles.
+func (c *Client) Close() error {
+	var err error
+	if c != nil && c.BaseClient != nil {
+		err = c.BaseClient.Close()
+	}
+	if c != nil && c.events != nil {
+		c.events.completeAll(fmt.Errorf("connection closed"))
+	}
+	return err
 }
 
 // RawExecutionHandle manages an active command execution with stream access
@@ -46,10 +139,9 @@ type RawExecutionHandle struct {
 	Done     <-chan error
 	ExitCode <-chan int
 	Cancel   func() error
-	mu       sync.RWMutex
-	closed   bool
 	doneCh   chan error
 	exitCh   chan int
+	once     sync.Once
 }
 
 // Run executes a raw command
@@ -140,59 +232,60 @@ func (c *Client) Run(ctx context.Context, req RunRequest) (*RawExecutionHandle, 
 		},
 	}
 
-	// Start monitoring goroutine
-	go handle.monitor(ctx, c)
+	// Register handle for event-driven completion (no polling).
+	if c.events != nil {
+		c.events.register(handle)
+	}
+
+	// If the caller supplied a cancelable ctx, propagate cancellation to the handle.
+	if ctx != nil && ctx.Done() != nil {
+		go func() {
+			<-ctx.Done()
+			handle.complete(ctx.Err(), -1)
+			if c.events != nil {
+				c.events.unregister(runID)
+			}
+		}()
+	}
 
 	return handle, nil
 }
 
-// monitor monitors the execution status and updates channels
-func (h *RawExecutionHandle) monitor(ctx context.Context, client *Client) {
-	defer close(h.doneCh)
-	defer close(h.exitCh)
-
-	// Poll for status updates
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
-
-	var lastStatus string
-	for {
-		select {
-		case <-ctx.Done():
-			h.doneCh <- ctx.Err()
-			return
-		case <-ticker.C:
-			status, err := client.Status(ctx, h.RunID)
-			if err != nil {
-				// Continue polling on error
-				continue
-			}
-
-			if status.Status != lastStatus {
-				lastStatus = status.Status
-
-				if status.Status == string(RunStatusCompleted) || status.Status == string(RunStatusFailed) {
-					if status.ExitCode != nil {
-						h.exitCh <- *status.ExitCode
-					} else {
-						h.exitCh <- -1
-					}
-					if status.Status == string(RunStatusFailed) {
-						h.doneCh <- fmt.Errorf("execution failed")
-					} else {
-						h.doneCh <- nil
-					}
-					return
-				}
-
-				if status.Status == string(RunStatusCanceled) {
-					h.exitCh <- -1
-					h.doneCh <- fmt.Errorf("execution canceled")
-					return
-				}
-			}
-		}
+func (h *RawExecutionHandle) completeFromStatus(status protocol.ComputeStatusResponse) {
+	exit := -1
+	if status.ExitCode != nil {
+		exit = *status.ExitCode
 	}
+
+	switch status.Status {
+	case string(RunStatusCompleted):
+		h.complete(nil, exit)
+	case string(RunStatusCanceled):
+		h.complete(fmt.Errorf("execution canceled"), -1)
+	case string(RunStatusFailed):
+		h.complete(fmt.Errorf("execution failed"), exit)
+	default:
+		// ignore
+	}
+}
+
+func (h *RawExecutionHandle) complete(err error, exitCode int) {
+	if h == nil {
+		return
+	}
+	h.once.Do(func() {
+		// Best-effort send; channels are buffered.
+		select {
+		case h.exitCh <- exitCode:
+		default:
+		}
+		select {
+		case h.doneCh <- err:
+		default:
+		}
+		close(h.exitCh)
+		close(h.doneCh)
+	})
 }
 
 // Cancel cancels a running command execution
