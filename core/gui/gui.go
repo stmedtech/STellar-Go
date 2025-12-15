@@ -218,24 +218,14 @@ func (app *GUIApp) initDevices() fyne.CanvasObject {
 				return nil
 			}
 
-			SEP := "/"
-
-			spts := strings.Split(path, SEP)
-			if len(spts) == 0 {
-				return nil
-			}
-
-			search := spts[0]
-			trailing := strings.Join(spts[1:], SEP)
-
-			for _, f := range fs {
-				if f.Filename == search {
-					if len(spts) == 1 {
-						return &f
-					}
-
-					if f.IsDir && len(spts) > 1 {
-						return findEntryRecur(trailing, f.Children)
+			for i := range fs {
+				entry := &fs[i]
+				if entry.FullName() == path {
+					return entry
+				}
+				if entry.IsDir {
+					if found := findEntryRecur(path, entry.Children); found != nil {
+						return found
 					}
 				}
 			}
@@ -314,7 +304,7 @@ func (app *GUIApp) initDevices() fyne.CanvasObject {
 				return
 			}
 
-			filePath, err := file.Download(app.node, device.ID, f.FullName(), file.DataDir)
+			filePath, err := file.Download(app.node, device.ID, f.FullName(), filepath.Join(file.DataDir, f.Filename))
 			if err != nil {
 				app.showErrWithWindow(err, w)
 				return
