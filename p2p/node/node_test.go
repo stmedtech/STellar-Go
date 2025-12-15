@@ -483,7 +483,7 @@ func TestNodeDiscoverDevice(t *testing.T) {
 	
 	// discoverDevice should panic when Host is nil
 	assert.Panics(t, func() {
-		node.discoverDevice(peerInfo)
+		node.discoverDevice(peerInfo, nil)
 	})
 }
 

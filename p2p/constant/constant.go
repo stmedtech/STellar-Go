@@ -26,12 +26,5 @@ const (
 	StellarFileSend           string = "send"
 )
 
-const StellarComputeProtocol protocol.ID = "/stellar-compute/1.0.1"
-
-const (
-	StellarComputeUnknownCommand      string = "unkown"
-	StellarComputePrepareCondaPython  string = "prepCondaPython"
-	StellarComputeListCondaPythonEnvs string = "listCondaPythonEnvs"
-	StellarComputeExecuteScript       string = "executeScript"
-	StellarComputeExecuteWorkspace    string = "executeWorkspace"
-)
+// Compute protocol (raw execution) - clean-slate implementation.
+const StellarComputeProtocol protocol.ID = "/stellar-compute/1.0.0"

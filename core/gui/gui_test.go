@@ -3,8 +3,6 @@ package gui
 import (
 	"testing"
 
-	"stellar/core/protocols/compute"
-
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -202,46 +200,4 @@ func BenchmarkNewGUIApp(b *testing.B) {
 			b.Fatal("app is nil")
 		}
 	}
-}
-
-func TestCondaPythonWorkspaceExecutionStruct(t *testing.T) {
-	// Test that the CondaPythonWorkspaceExecution struct is accessible
-	// and can be created with the expected fields
-	workspaceExec := &compute.CondaPythonWorkspaceExecution{
-		Env:           "test-env",
-		WorkspacePath: "/path/to/workspace.zip",
-	}
-
-	// Verify struct fields
-	assert.Equal(t, "test-env", workspaceExec.Env)
-	assert.Equal(t, "/path/to/workspace.zip", workspaceExec.WorkspacePath)
-}
-
-func TestCondaPythonWorkspaceExecutionEmptyFields(t *testing.T) {
-	// Test CondaPythonWorkspaceExecution with empty fields
-	workspaceExec := &compute.CondaPythonWorkspaceExecution{}
-
-	// Verify struct can be created with empty fields
-	assert.Empty(t, workspaceExec.Env)
-	assert.Empty(t, workspaceExec.WorkspacePath)
-}
-
-func TestCondaPythonWorkspaceExecutionFieldModification(t *testing.T) {
-	// Test that struct fields can be modified
-	workspaceExec := &compute.CondaPythonWorkspaceExecution{
-		Env:           "initial-env",
-		WorkspacePath: "/initial/path.zip",
-	}
-
-	// Verify initial values
-	assert.Equal(t, "initial-env", workspaceExec.Env)
-	assert.Equal(t, "/initial/path.zip", workspaceExec.WorkspacePath)
-
-	// Modify fields
-	workspaceExec.Env = "modified-env"
-	workspaceExec.WorkspacePath = "/modified/path.zip"
-
-	// Verify modified values
-	assert.Equal(t, "modified-env", workspaceExec.Env)
-	assert.Equal(t, "/modified/path.zip", workspaceExec.WorkspacePath)
 }

@@ -7,15 +7,25 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
-	"time"
 
 	"stellar/p2p/node"
+	"stellar/p2p/protocols/echo"
 	"stellar/p2p/protocols/proxy"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func freeTCPPort(t *testing.T) int {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	port := ln.Addr().(*net.TCPAddr).Port
+	require.NoError(t, ln.Close())
+	return port
+}
 
 // TestCreateProxyAPI tests the CreateProxy API endpoint
 func TestCreateProxyAPI(t *testing.T) {
@@ -23,6 +33,9 @@ func TestCreateProxyAPI(t *testing.T) {
 	testNode, err := node.NewNode("127.0.0.1", 0)
 	require.NoError(t, err)
 	defer testNode.Close()
+
+	// Bind echo so ConnectDevice/Ping works (required by node.ConnectDevice health checks)
+	echo.BindEchoStream(testNode)
 
 	// Create proxy manager
 	proxyManager := proxy.NewProxyManager(testNode)
@@ -39,23 +52,26 @@ func TestCreateProxyAPI(t *testing.T) {
 	require.NoError(t, err)
 	defer testNode2.Close()
 
+	// Bind protocols on the remote peer so negotiation works
+	echo.BindEchoStream(testNode2)
+	_ = proxy.NewProxyManager(testNode2) // registers proxy stream handler on remote
+
 	// Connect nodes
 	peerInfo := testNode2.Host.Peerstore().PeerInfo(testNode2.ID())
 	err = testNode.Host.Connect(context.Background(), peerInfo)
 	require.NoError(t, err)
-
-	// Wait for connection
-	time.Sleep(500 * time.Millisecond)
 
 	// Add device to node
 	device, err := testNode.ConnectDevice(peerInfo)
 	require.NoError(t, err)
 	require.NotNil(t, device)
 
+	localPort := freeTCPPort(t)
+
 	// Create request body
 	reqBody := map[string]interface{}{
 		"device_id":   device.ID.String(),
-		"local_port":  8081,
+		"local_port":  localPort,
 		"remote_host": "127.0.0.1",
 		"remote_port": 8080,
 	}
@@ -92,9 +108,10 @@ func TestCreateProxyAPIInvalidDevice(t *testing.T) {
 	}
 	apiServer.Start()
 
+	localPort := freeTCPPort(t)
 	reqBody := map[string]interface{}{
 		"device_id":   "invalid-device-id",
-		"local_port":  8081,
+		"local_port":  localPort,
 		"remote_host": "127.0.0.1",
 		"remote_port": 8080,
 	}
@@ -225,6 +242,10 @@ func TestProxyAPIIntegration(t *testing.T) {
 	require.NoError(t, err)
 	defer testNode2.Close()
 
+	// Bind protocols so ConnectDevice is deterministic.
+	echo.BindEchoStream(testNode1)
+	echo.BindEchoStream(testNode2)
+
 	// Create proxy managers
 	proxyManager1 := proxy.NewProxyManager(testNode1)
 	proxy.NewProxyManager(testNode2) // Server-side
@@ -241,40 +262,24 @@ func TestProxyAPIIntegration(t *testing.T) {
 	err = testNode1.Host.Connect(context.Background(), peerInfo)
 	require.NoError(t, err)
 
-	time.Sleep(500 * time.Millisecond)
+	// ConnectDevice performs ping/device-info handshake and registers the device locally.
+	device, err := testNode1.ConnectDevice(peerInfo)
+	require.NoError(t, err)
+	require.NotNil(t, device)
 
-	// Manually add device to node (bypassing ConnectDevice which requires echo protocol)
-	// We'll use the peer ID directly
-	deviceID := testNode2.ID()
-
-	// Start a test server on node2 using regular TCP listener
-	serverAddr := "127.0.0.1:8080"
-	listener, err := net.Listen("tcp", serverAddr)
-	// For now, skip if we can't create listener (port might be in use)
-	if err != nil {
-		t.Skip("Cannot create test server listener")
-	}
-	defer listener.Close()
-
-	// Start a simple echo server
-	go func() {
-		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				return
-			}
-			conn.Write([]byte("test response"))
-			conn.Close()
-		}
-	}()
-	time.Sleep(100 * time.Millisecond)
+	// Use ephemeral ports to avoid collisions in parallel test runs.
+	localPort := freeTCPPort(t)
+	destListener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	destPort := destListener.Addr().(*net.TCPAddr).Port
+	require.NoError(t, destListener.Close())
 
 	// Create proxy via API
 	reqBody := map[string]interface{}{
-		"device_id":   deviceID.String(),
-		"local_port":  8081,
+		"device_id":   device.ID.String(),
+		"local_port":  localPort,
 		"remote_host": "127.0.0.1",
-		"remote_port": 8080,
+		"remote_port": destPort,
 	}
 	jsonBody, err := json.Marshal(reqBody)
 	require.NoError(t, err)
@@ -284,13 +289,12 @@ func TestProxyAPIIntegration(t *testing.T) {
 	w := httptest.NewRecorder()
 
 	apiServer.server.ServeHTTP(w, req)
-	// The API will return 404 if device is not found, which is expected
-	// since we didn't use ConnectDevice. This tests the error path.
-	if w.Code != http.StatusOK {
-		t.Logf("CreateProxy returned %d (expected if device not in Devices map): %s", w.Code, w.Body.String())
-		// This is acceptable - the test verifies the API endpoint works
-		return
-	}
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var createResp map[string]interface{}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &createResp))
+	createdPort, ok := createResp["local_port"].(float64)
+	require.True(t, ok)
 
 	// List proxies
 	req = httptest.NewRequest("GET", "/proxy", nil)
@@ -303,10 +307,9 @@ func TestProxyAPIIntegration(t *testing.T) {
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, len(proxies), 0)
 
-	// Close proxy via API
-	req = httptest.NewRequest("DELETE", "/proxy/8081", nil)
+	// Close proxy via API (use the actual created port).
+	req = httptest.NewRequest("DELETE", "/proxy/"+strconv.Itoa(int(createdPort)), nil)
 	w = httptest.NewRecorder()
 	apiServer.server.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusOK, w.Code)
 }
-

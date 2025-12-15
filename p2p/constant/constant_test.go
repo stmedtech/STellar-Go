@@ -23,11 +23,11 @@ func TestStellarEchoCommands(t *testing.T) {
 }
 
 func TestStellarProxyProtocol(t *testing.T) {
-	assert.Equal(t, protocol.ID("/stellar-proxy/1.0.0"), StellarProxyProtocol)
+	assert.Equal(t, protocol.ID("/stellar-proxy/1.1.0"), StellarProxyProtocol)
 }
 
 func TestStellarFileProtocol(t *testing.T) {
-	assert.Equal(t, protocol.ID("/stellar-file/1.0.1"), StellarFileProtocol)
+	assert.Equal(t, protocol.ID("/stellar-file/1.1.0"), StellarFileProtocol)
 }
 
 func TestStellarFileCommands(t *testing.T) {
@@ -39,14 +39,6 @@ func TestStellarFileCommands(t *testing.T) {
 
 func TestStellarComputeProtocol(t *testing.T) {
 	assert.Equal(t, protocol.ID("/stellar-compute/1.0.0"), StellarComputeProtocol)
-}
-
-func TestStellarComputeCommands(t *testing.T) {
-	assert.Equal(t, "unkown", StellarComputeUnknownCommand)
-	assert.Equal(t, "prepCondaPython", StellarComputePrepareCondaPython)
-	assert.Equal(t, "listCondaPythonEnvs", StellarComputeListCondaPythonEnvs)
-	assert.Equal(t, "executeScript", StellarComputeExecuteScript)
-	assert.Equal(t, "executeWorkspace", StellarComputeExecuteWorkspace)
 }
 
 func TestProtocolIDTypes(t *testing.T) {
@@ -68,9 +60,5 @@ func TestStringConstants(t *testing.T) {
 	assert.NotEmpty(t, StellarFileList)
 	assert.NotEmpty(t, StellarFileGet)
 	assert.NotEmpty(t, StellarFileSend)
-	assert.NotEmpty(t, StellarComputeUnknownCommand)
-	assert.NotEmpty(t, StellarComputePrepareCondaPython)
-	assert.NotEmpty(t, StellarComputeListCondaPythonEnvs)
-	assert.NotEmpty(t, StellarComputeExecuteScript)
-	assert.NotEmpty(t, StellarComputeExecuteWorkspace)
+	// Compute commands are intentionally removed in the clean-slate raw compute protocol.
 }
