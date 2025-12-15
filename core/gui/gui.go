@@ -1,7 +1,11 @@
 package gui
 
 import (
+	"bufio"
+	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"maps"
 	"math"
 	"path/filepath"
@@ -12,6 +16,8 @@ import (
 	// "stellar/core/device" // Temporarily unused (Phase 0 cleanup)
 	// "stellar/core/protocols/compute" // Temporarily disabled (Phase 0 cleanup)
 	"stellar/p2p/node"
+	p2p_compute "stellar/p2p/protocols/compute"
+	compute_service "stellar/p2p/protocols/compute/service"
 	"stellar/p2p/protocols/file"
 	"stellar/p2p/protocols/proxy"
 	"strconv"
@@ -356,27 +362,282 @@ func (app *GUIApp) initDevices() fyne.CanvasObject {
 		fd.Show()
 	})
 
-	// NOTE: Temporarily disabled as part of Phase 0 cleanup - will be replaced with new raw command execution API
-	prepareCondaPython := widget.NewButton("Prepare Python Env (Disabled)", func() {
-		dialog.ShowInformation("Not Available", "Compute protocol is being refactored. This feature will be available in a future release.", nil)
+	openTerminal := widget.NewButton("Terminal", func() {
+		deviceId, err := app.selectedDeviceId.Get()
+		if err != nil || deviceId == "" {
+			return
+		}
+		dev, err := app.node.GetDevice(deviceId)
+		if err != nil {
+			app.showErr(err)
+			return
+		}
+		app.openTerminalWindow(dev.ID, deviceId)
 	})
 
-	// NOTE: Temporarily disabled as part of Phase 0 cleanup - will be replaced with new raw command execution API
-	executeCondaPythonScript := widget.NewButton("Execute Python Script (Disabled)", func() {
-		dialog.ShowInformation("Not Available", "Compute protocol is being refactored. This feature will be available in a future release.", nil)
-	})
-
-	// NOTE: Temporarily disabled as part of Phase 0 cleanup - will be replaced with new raw command execution API
-	executeCondaPythonWorkspace := widget.NewButton("Execute Python Workspace (Disabled)", func() {
-		dialog.ShowInformation("Not Available", "Compute protocol is being refactored. This feature will be available in a future release.", nil)
-	})
-
-	deviceControls := container.NewHBox(filesTree, sendFile, prepareCondaPython, executeCondaPythonScript, executeCondaPythonWorkspace)
+	deviceControls := container.NewHBox(filesTree, sendFile, openTerminal)
 
 	split := container.NewHSplit(content, container.NewVBox(contentText, deviceControls))
 	split.Offset = 0.2
 
 	return split
+}
+
+func (app *GUIApp) openTerminalWindow(peerID peer.ID, deviceID string) {
+	w := app.a.NewWindow(fmt.Sprintf("Terminal - %s", deviceID))
+	w.Resize(fyne.NewSize(900, 650))
+
+	status := widget.NewLabel("Ready")
+
+	output := widget.NewMultiLineEntry()
+	output.Disable()
+	output.Wrapping = fyne.TextWrapOff
+
+	scroll := container.NewScroll(output)
+	scroll.SetMinSize(fyne.NewSize(880, 500))
+
+	stdinEntry := widget.NewEntry()
+	stdinEntry.SetPlaceHolder("Type command and press Enter (or Ctrl+D to close stdin)")
+
+	cancelBtn := widget.NewButton("Cancel", func() {})
+	cancelBtn.Disable()
+
+	appendCh := make(chan string, 256)
+	closeCh := make(chan struct{})
+
+	var client *compute_service.Client
+	var currentHandle *compute_service.RawExecutionHandle
+	var isConnecting bool
+
+	flush := func(s string) {
+		// Best-effort append; keep it simple (terminal output sizes are user-driven).
+		output.SetText(output.Text + s)
+		// Auto-scroll to bottom
+		scroll.ScrollToBottom()
+	}
+
+	go func() {
+		for {
+			select {
+			case <-closeCh:
+				return
+			case s := <-appendCh:
+				fyne.Do(func() { flush(s) })
+			}
+		}
+	}()
+
+	connect := func() error {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		c, err := p2p_compute.DialComputeClient(ctx, app.node, peerID)
+		if err != nil {
+			return err
+		}
+		client = c
+		status.SetText("Connected")
+		return nil
+	}
+
+	readStream := func(r io.Reader) {
+		buf := make([]byte, 4096)
+		for {
+			n, err := r.Read(buf)
+			if n > 0 {
+				appendCh <- string(buf[:n])
+			}
+			if err != nil {
+				if err != io.EOF {
+					appendCh <- fmt.Sprintf("\n[stream error] %v\n", err)
+				}
+				return
+			}
+		}
+	}
+
+	readLog := func(r io.Reader) {
+		sc := bufio.NewScanner(r)
+		for sc.Scan() {
+			line := strings.TrimSpace(sc.Text())
+			if line == "" {
+				continue
+			}
+			var e map[string]any
+			if err := json.Unmarshal([]byte(line), &e); err == nil {
+				typ, _ := e["type"].(string)
+				if typ != "" {
+					// Log entries are typically for debugging; we can show them optionally
+					// For now, skip them to keep output clean
+					continue
+				}
+			}
+		}
+	}
+
+	// Execute a command dynamically
+	executeCommand := func(cmdLine string) error {
+		if client == nil {
+			return fmt.Errorf("not connected")
+		}
+
+		// Parse command line (simple space-separated, no quote handling for now)
+		fields := strings.Fields(cmdLine)
+		if len(fields) == 0 {
+			return fmt.Errorf("empty command")
+		}
+
+		cmd := fields[0]
+		args := []string{}
+		if len(fields) > 1 {
+			args = fields[1:]
+		}
+
+		// Show command being executed
+		appendCh <- fmt.Sprintf("$ %s\n", cmdLine)
+
+		h, err := client.Run(context.Background(), compute_service.RunRequest{
+			RunID:   "",
+			Command: cmd,
+			Args:    args,
+		})
+		if err != nil {
+			return err
+		}
+
+		currentHandle = h
+
+		// Start reading streams
+		go readStream(h.Stdout)
+		go readStream(h.Stderr)
+		go readLog(h.Log)
+
+		// Monitor completion
+		go func() {
+			err := <-h.Done
+			code := <-h.ExitCode
+			fyne.Do(func() {
+				if err != nil {
+					appendCh <- fmt.Sprintf("[exit] error: %v\n", err)
+				} else {
+					appendCh <- fmt.Sprintf("[exit] code=%d\n", code)
+				}
+				// Clear current handle when done
+				if currentHandle == h {
+					currentHandle = nil
+					cancelBtn.Disable()
+				}
+			})
+		}()
+
+		return nil
+	}
+
+	// Execute command from input
+	executeInput := func() {
+		txt := strings.TrimSpace(stdinEntry.Text)
+		if txt == "" {
+			return
+		}
+
+		// If not connected, connect first, then execute the command
+		if client == nil {
+			if isConnecting {
+				return // Already connecting
+			}
+			isConnecting = true
+			status.SetText("Connecting...")
+			stdinEntry.Disable()
+
+			// Save the command to execute after connection
+			cmdToExecute := txt
+			stdinEntry.SetText("")
+
+			go func() {
+				if err := connect(); err != nil {
+					fyne.Do(func() {
+						app.showErrWithWindow(err, w)
+						status.SetText("Connection failed (policy may block; whitelist the peer in 'White List')")
+						stdinEntry.Enable()
+						isConnecting = false
+					})
+					return
+				}
+				// Execute the first command after connection
+				if err := executeCommand(cmdToExecute); err != nil {
+					fyne.Do(func() {
+						app.showErrWithWindow(err, w)
+						status.SetText("Command execution failed")
+						stdinEntry.Enable()
+						isConnecting = false
+					})
+					return
+				}
+				fyne.Do(func() {
+					status.SetText("Connected")
+					stdinEntry.Enable()
+					cancelBtn.Enable()
+					isConnecting = false
+				})
+			}()
+			return
+		}
+
+		// If a command is still running, send input to it
+		if currentHandle != nil && currentHandle.Stdin != nil {
+			stdinEntry.SetText("")
+			txt += "\n"
+			_, err := currentHandle.Stdin.Write([]byte(txt))
+			if err != nil {
+				fyne.Do(func() {
+					app.showErrWithWindow(err, w)
+				})
+			}
+			return
+		}
+
+		// Execute new command
+		stdinEntry.SetText("")
+		if err := executeCommand(txt); err != nil {
+			fyne.Do(func() {
+				app.showErrWithWindow(err, w)
+			})
+			return
+		}
+		cancelBtn.Enable()
+	}
+
+	stdinEntry.OnSubmitted = func(_ string) { executeInput() }
+
+	cancelBtn.OnTapped = func() {
+		if currentHandle == nil {
+			return
+		}
+		if err := currentHandle.Cancel(); err != nil {
+			fyne.Do(func() {
+				app.showErrWithWindow(err, w)
+			})
+		}
+	}
+
+	w.SetOnClosed(func() {
+		close(closeCh)
+		if currentHandle != nil {
+			_ = currentHandle.Cancel()
+		}
+		if client != nil {
+			_ = client.Close()
+		}
+	})
+
+	top := container.NewVBox(
+		widget.NewLabel(fmt.Sprintf("Device: %s", deviceID)),
+		status,
+	)
+	// Make stdinEntry expand to max width by placing it in the center of a border container
+	bottom := container.NewBorder(nil, nil, nil, cancelBtn, stdinEntry)
+	w.SetContent(container.NewBorder(top, bottom, nil, nil, scroll))
+	w.Show()
 }
 
 func (app *GUIApp) initProxies() fyne.CanvasObject {
