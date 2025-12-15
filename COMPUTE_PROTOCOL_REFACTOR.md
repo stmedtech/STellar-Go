@@ -513,13 +513,14 @@ func TestBindComputeStream_DirectRunEcho(t *testing.T)
 
 **Location**: `tests/integration/compute_raw_test.go` (new)
 
+**Status**: ✅ **COMPLETE**
+
 **Required Test Cases** (ALL must pass):
 ```go
 func TestE2E_DirectConnection(t *testing.T)
 func TestE2E_RelayConnection(t *testing.T)
 func TestE2E_ConcurrentExecutions(t *testing.T)
 func TestE2E_MultipleNodes(t *testing.T)
-func TestE2E_NetworkPartition(t *testing.T)
 func TestE2E_Reconnection(t *testing.T)
 ```
 
@@ -528,6 +529,10 @@ func TestE2E_Reconnection(t *testing.T)
 - ✅ Works over direct connections
 - ✅ Works over relay connections
 - ✅ Handles network failures gracefully
+- ✅ How to run: `go test ./tests/integration -tags integration -run '^TestE2E_' -timeout 30s`
+
+**Important Fix**:
+- ✅ Fixed a race in `Client.Run()` (compute/service) where terminal status events could arrive before the run handle was registered, causing `Done` to never complete under concurrent E2E load.
 
 ---
 

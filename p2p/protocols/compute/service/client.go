@@ -156,6 +156,24 @@ func (c *Client) Run(ctx context.Context, req RunRequest) (*RawExecutionHandle, 
 		runID = generateRunID()
 	}
 
+	// Create channels + handle and register EARLY to avoid races where a terminal status event
+	// arrives before Run() returns (e.g., fast commands like `echo`).
+	doneCh := make(chan error, 1)
+	exitCh := make(chan int, 1)
+	handle := &RawExecutionHandle{
+		RunID:    runID,
+		Done:     doneCh,
+		ExitCode: exitCh,
+		doneCh:   doneCh,
+		exitCh:   exitCh,
+		Cancel: func() error {
+			return c.Cancel(ctx, runID)
+		},
+	}
+	if c.events != nil {
+		c.events.register(handle)
+	}
+
 	// Create request packet
 	computeReq := protocol.ComputeRunRequest{
 		RunID:      runID,
@@ -167,33 +185,51 @@ func (c *Client) Run(ctx context.Context, req RunRequest) (*RawExecutionHandle, 
 
 	requestPacket, err := protocol.NewComputeRunPacket(computeReq)
 	if err != nil {
+		if c.events != nil {
+			c.events.unregister(runID)
+		}
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 
 	// Send request and wait for response
 	response, err := c.SendRequest(ctx, requestPacket, matchComputeRunResponse(runID))
 	if err != nil {
+		if c.events != nil {
+			c.events.unregister(runID)
+		}
 		return nil, err
 	}
 
 	var runResponse protocol.ComputeRunResponse
 	if err := response.UnmarshalPayload(&runResponse); err != nil {
+		if c.events != nil {
+			c.events.unregister(runID)
+		}
 		return nil, fmt.Errorf("unmarshal response: %w", err)
 	}
 
 	if !runResponse.Accepted {
+		if c.events != nil {
+			c.events.unregister(runID)
+		}
 		return nil, fmt.Errorf("run rejected: %s", runResponse.Error)
 	}
 
 	// Get or create streams
 	stdinStream, err := c.GetOrCreateStream(runResponse.StdinID)
 	if err != nil {
+		if c.events != nil {
+			c.events.unregister(runID)
+		}
 		return nil, fmt.Errorf("get stdin stream: %w", err)
 	}
 
 	stdoutStream, err := c.GetOrCreateStream(runResponse.StdoutID)
 	if err != nil {
 		stdinStream.Close()
+		if c.events != nil {
+			c.events.unregister(runID)
+		}
 		return nil, fmt.Errorf("get stdout stream: %w", err)
 	}
 
@@ -201,6 +237,9 @@ func (c *Client) Run(ctx context.Context, req RunRequest) (*RawExecutionHandle, 
 	if err != nil {
 		stdinStream.Close()
 		stdoutStream.Close()
+		if c.events != nil {
+			c.events.unregister(runID)
+		}
 		return nil, fmt.Errorf("get stderr stream: %w", err)
 	}
 
@@ -209,33 +248,17 @@ func (c *Client) Run(ctx context.Context, req RunRequest) (*RawExecutionHandle, 
 		stdinStream.Close()
 		stdoutStream.Close()
 		stderrStream.Close()
+		if c.events != nil {
+			c.events.unregister(runID)
+		}
 		return nil, fmt.Errorf("get log stream: %w", err)
 	}
 
-	// Create channels for completion tracking
-	doneCh := make(chan error, 1)
-	exitCh := make(chan int, 1)
-
-	// Create handle
-	handle := &RawExecutionHandle{
-		RunID:    runID,
-		Stdin:    stdinStream,
-		Stdout:   stdoutStream,
-		Stderr:   stderrStream,
-		Log:      logStream,
-		Done:     doneCh,
-		ExitCode: exitCh,
-		doneCh:   doneCh,
-		exitCh:   exitCh,
-		Cancel: func() error {
-			return c.Cancel(ctx, runID)
-		},
-	}
-
-	// Register handle for event-driven completion (no polling).
-	if c.events != nil {
-		c.events.register(handle)
-	}
+	// Attach streams to the already-registered handle.
+	handle.Stdin = stdinStream
+	handle.Stdout = stdoutStream
+	handle.Stderr = stderrStream
+	handle.Log = logStream
 
 	// If the caller supplied a cancelable ctx, propagate cancellation to the handle.
 	if ctx != nil && ctx.Done() != nil {
