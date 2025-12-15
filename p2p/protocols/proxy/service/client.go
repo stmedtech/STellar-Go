@@ -132,15 +132,11 @@ func (c *Client) OpenWithLocalConn(proxyID, remoteAddr, proto string, localConn 
 }
 
 func (c *Client) forwardLocalToRemote(local, remote io.ReadWriteCloser) {
-	defer func() {
-		if local != nil {
-			local.Close()
-		}
-		if remote != nil {
-			remote.Close()
-		}
-	}()
-	io.Copy(remote, local)
+	_, _ = io.Copy(remote, local)
+	// Try half-close so the reverse direction can continue.
+	if cw, ok := remote.(interface{ CloseWrite() error }); ok {
+		_ = cw.CloseWrite()
+	}
 }
 
 func (c *Client) forwardRemoteToLocal(remote, local io.ReadWriteCloser) {
@@ -152,7 +148,7 @@ func (c *Client) forwardRemoteToLocal(remote, local io.ReadWriteCloser) {
 			local.Close()
 		}
 	}()
-	io.Copy(local, remote)
+	_, _ = io.Copy(local, remote)
 }
 
 // Close closes a proxy
@@ -264,9 +260,6 @@ func (c *Client) CloseAll() error {
 }
 
 // Helper methods
-
-// Use base service types
-type matcher = base_service.Matcher
 
 func matchProxyOpened(expectedProxy string) base_service.Matcher {
 	return func(h *protocol.HandshakePacket) (bool, error) {

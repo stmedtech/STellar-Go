@@ -44,7 +44,9 @@ func (m *ProxyManager) Proxy(peer peer.ID, hostPort uint64, destAddr string) (pr
 	m.proxies = append(m.proxies, proxy)
 	m.lock.Unlock()
 
-	proxy.Serve()
+	if serveErr := proxy.Serve(); serveErr != nil {
+		return nil, serveErr
+	}
 	return
 }
 

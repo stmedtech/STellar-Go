@@ -1,14 +1,21 @@
 package service
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/libp2p/go-libp2p"
-	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
@@ -95,39 +102,568 @@ func TestLibp2pStreamCreation(t *testing.T) {
 	require.Equal(t, testData, buffer[:n])
 }
 
-// setupLibp2pNodes creates two libp2p hosts and connects them
-func setupLibp2pNodes(t *testing.T) (host.Host, host.Host, network.Stream) {
-	// Create host1 (server)
-	h1, err := libp2p.New(
-		libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"),
-	)
-	require.NoError(t, err)
-	t.Cleanup(func() { h1.Close() })
+// TestProxyHTTPKeepAlive ensures two sequential HTTP/1.1 requests over the same
+// proxied TCP connection succeed without empty responses or premature closes.
+func TestProxyHTTPKeepAlive(t *testing.T) {
+	// Backend HTTP server
+	mux := http.NewServeMux()
+	mux.HandleFunc("/one", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("one"))
+	})
+	mux.HandleFunc("/two", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("two"))
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
 
-	// Create host2 (client)
-	h2, err := libp2p.New(
-		libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"),
-	)
-	require.NoError(t, err)
-	t.Cleanup(func() { h2.Close() })
+	tsURL, _ := url.Parse(ts.URL)
+	backendAddr := tsURL.Host // host:port
 
-	// Connect host2 to host1
-	peerInfo := peer.AddrInfo{
-		ID:    h1.ID(),
-		Addrs: h1.Addrs(),
+	// libp2p hosts
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	hServer, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+	require.NoError(t, err)
+	defer hServer.Close()
+
+	hClient, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+	require.NoError(t, err)
+	defer hClient.Close()
+
+	// Attach proxy server handler
+	hServer.SetStreamHandler(proxyProtocolID, func(s network.Stream) {
+		srv := NewServer(s)
+		if srv == nil {
+			return
+		}
+		if err := srv.Accept(); err != nil {
+			return
+		}
+		// Serve until stream/conn closes
+		_ = srv.Serve(context.Background())
+	})
+
+	// Connect client to server
+	err = hClient.Connect(ctx, peer.AddrInfo{ID: hServer.ID(), Addrs: hServer.Addrs()})
+	require.NoError(t, err)
+
+	// Open proxy control stream
+	allowCtx := network.WithAllowLimitedConn(ctx, proxyProtocolIDStr)
+	ctrl, err := hClient.NewStream(allowCtx, hServer.ID(), proxyProtocolID)
+	require.NoError(t, err)
+	defer ctrl.Close()
+
+	client := NewClient(hClient.ID().String(), ctrl)
+	require.NotNil(t, client)
+	require.NoError(t, client.Connect())
+	defer client.CloseAll()
+
+	// Local pipe simulating browser TCP conn
+	localConn, browserConn := net.Pipe()
+	defer browserConn.Close()
+
+	// Open proxy and attach local side
+	_, err = client.OpenWithLocalConn("p-http", backendAddr, "tcp", localConn)
+	require.NoError(t, err)
+
+	// Send two sequential HTTP requests on same conn
+	bw := bufio.NewWriter(browserConn)
+	br := bufio.NewReader(browserConn)
+
+	sendReq := func(path, connHdr string) {
+		fmt.Fprintf(bw, "GET %s HTTP/1.1\r\nHost: test\r\nConnection: %s\r\n\r\n", path, connHdr)
+		bw.Flush()
 	}
-	err = h2.Connect(context.Background(), peerInfo)
+
+	// First request keep-alive
+	sendReq("/one", "keep-alive")
+	resp1, err := http.ReadResponse(br, &http.Request{Method: "GET"})
+	require.NoError(t, err)
+	body1, _ := io.ReadAll(resp1.Body)
+	resp1.Body.Close()
+	assert.Equal(t, "one", string(body1))
+
+	// Second request reuses same conn
+	sendReq("/two", "close")
+	resp2, err := http.ReadResponse(br, &http.Request{Method: "GET"})
+	require.NoError(t, err)
+	body2, _ := io.ReadAll(resp2.Body)
+	resp2.Body.Close()
+	assert.Equal(t, "two", string(body2))
+}
+
+// TestProxyHTTPKeepAliveContentLength ensures large bodies over keep-alive are
+// delivered fully without truncation (which would surface as
+// ERR_CONTENT_LENGTH_MISMATCH in browsers).
+func TestProxyHTTPKeepAliveContentLength(t *testing.T) {
+	// Large deterministic body
+	body := bytes.Repeat([]byte("x"), 128*1024) // 128 KiB
+
+	// Backend HTTP server
+	mux := http.NewServeMux()
+	mux.HandleFunc("/big", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
+		_, _ = w.Write(body)
+	})
+	mux.HandleFunc("/small", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("ok"))
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	tsURL, _ := url.Parse(ts.URL)
+	backendAddr := tsURL.Host
+
+	// libp2p hosts
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	hServer, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+	require.NoError(t, err)
+	defer hServer.Close()
+
+	hClient, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+	require.NoError(t, err)
+	defer hClient.Close()
+
+	// Attach proxy server handler
+	hServer.SetStreamHandler(proxyProtocolID, func(s network.Stream) {
+		srv := NewServer(s)
+		if srv == nil {
+			return
+		}
+		if err := srv.Accept(); err != nil {
+			return
+		}
+		_ = srv.Serve(context.Background())
+	})
+
+	// Connect client to server
+	err = hClient.Connect(ctx, peer.AddrInfo{ID: hServer.ID(), Addrs: hServer.Addrs()})
 	require.NoError(t, err)
 
-	// Wait for connection to be established
-	time.Sleep(100 * time.Millisecond)
+	// Open proxy control stream
+	allowCtx := network.WithAllowLimitedConn(ctx, proxyProtocolIDStr)
+	ctrl, err := hClient.NewStream(allowCtx, hServer.ID(), proxyProtocolID)
+	require.NoError(t, err)
+	defer ctrl.Close()
 
-	// Create a stream from host2 to host1
-	allowCtx := network.WithAllowLimitedConn(context.Background(), proxyProtocolIDStr)
-	stream, err := h2.NewStream(allowCtx, h1.ID(), proxyProtocolID)
+	client := NewClient(hClient.ID().String(), ctrl)
+	require.NotNil(t, client)
+	require.NoError(t, client.Connect())
+	defer client.CloseAll()
+
+	// Local pipe simulating browser TCP conn
+	localConn, browserConn := net.Pipe()
+	defer browserConn.Close()
+
+	_, err = client.OpenWithLocalConn("p-http-big", backendAddr, "tcp", localConn)
 	require.NoError(t, err)
 
-	return h1, h2, stream
+	bw := bufio.NewWriter(browserConn)
+	br := bufio.NewReader(browserConn)
+
+	sendReq := func(path, connHdr string) {
+		fmt.Fprintf(bw, "GET %s HTTP/1.1\r\nHost: test\r\nConnection: %s\r\n\r\n", path, connHdr)
+		bw.Flush()
+	}
+
+	// First request: big body, keep-alive
+	sendReq("/big", "keep-alive")
+	resp1, err := http.ReadResponse(br, &http.Request{Method: "GET"})
+	require.NoError(t, err)
+	b1, err := io.ReadAll(resp1.Body)
+	resp1.Body.Close()
+	require.NoError(t, err)
+	assert.Equal(t, len(body), len(b1))
+	assert.True(t, bytes.Equal(body, b1))
+
+	// Second request on same conn to ensure connection still valid
+	sendReq("/small", "close")
+	resp2, err := http.ReadResponse(br, &http.Request{Method: "GET"})
+	require.NoError(t, err)
+	b2, err := io.ReadAll(resp2.Body)
+	resp2.Body.Close()
+	require.NoError(t, err)
+	assert.Equal(t, "ok", string(b2))
+}
+
+// TestProxyHTTPConcurrentConnections exercises multiple simultaneous proxied TCP
+// connections (browser-style parallel fetches) to ensure responses are isolated
+// and bodies are delivered fully without mixups or truncation.
+func TestProxyHTTPConcurrentConnections(t *testing.T) {
+	bodyA := bytes.Repeat([]byte("A"), 64*1024)
+	bodyB := bytes.Repeat([]byte("B"), 96*1024)
+
+	// Backend HTTP server
+	mux := http.NewServeMux()
+	mux.HandleFunc("/a", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(bodyA)))
+		_, _ = w.Write(bodyA)
+	})
+	mux.HandleFunc("/b", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(bodyB)))
+		_, _ = w.Write(bodyB)
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	tsURL, _ := url.Parse(ts.URL)
+	backendAddr := tsURL.Host
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	hServer, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+	require.NoError(t, err)
+	defer hServer.Close()
+
+	hClient, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+	require.NoError(t, err)
+	defer hClient.Close()
+
+	hServer.SetStreamHandler(proxyProtocolID, func(s network.Stream) {
+		srv := NewServer(s)
+		if srv == nil {
+			return
+		}
+		if err := srv.Accept(); err != nil {
+			return
+		}
+		_ = srv.Serve(context.Background())
+	})
+
+	err = hClient.Connect(ctx, peer.AddrInfo{ID: hServer.ID(), Addrs: hServer.Addrs()})
+	require.NoError(t, err)
+
+	allowCtx := network.WithAllowLimitedConn(ctx, proxyProtocolIDStr)
+	ctrl, err := hClient.NewStream(allowCtx, hServer.ID(), proxyProtocolID)
+	require.NoError(t, err)
+	defer ctrl.Close()
+
+	client := NewClient(hClient.ID().String(), ctrl)
+	require.NotNil(t, client)
+	require.NoError(t, client.Connect())
+	defer client.CloseAll()
+
+	type reqSpec struct {
+		path     string
+		expected []byte
+	}
+
+	specs := []reqSpec{
+		{path: "/a", expected: bodyA},
+		{path: "/b", expected: bodyB},
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(len(specs))
+
+	for i, spec := range specs {
+		spec := spec
+		proxyID := fmt.Sprintf("p-http-concurrent-%d", i)
+
+		go func() {
+			defer wg.Done()
+
+			// Local pipe simulating browser TCP conn
+			localConn, browserConn := net.Pipe()
+			defer browserConn.Close()
+			defer localConn.Close()
+
+			_, err := client.OpenWithLocalConn(proxyID, backendAddr, "tcp", localConn)
+			require.NoError(t, err)
+
+			bw := bufio.NewWriter(browserConn)
+			br := bufio.NewReader(browserConn)
+
+			fmt.Fprintf(bw, "GET %s HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n", spec.path)
+			bw.Flush()
+
+			resp, err := http.ReadResponse(br, &http.Request{Method: "GET"})
+			require.NoError(t, err)
+			data, err := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			require.NoError(t, err)
+			assert.Equal(t, len(spec.expected), len(data))
+			assert.True(t, bytes.Equal(spec.expected, data))
+		}()
+	}
+
+	wg.Wait()
+}
+
+// TestProxyHTTPClientHalfClose ensures that when the client half-closes (FIN on
+// upload side) the downstream response is still delivered fully and not
+// truncated/closed prematurely.
+func TestProxyHTTPClientHalfClose(t *testing.T) {
+	body := bytes.Repeat([]byte("Z"), 64*1024)
+
+	// Backend HTTP server
+	mux := http.NewServeMux()
+	mux.HandleFunc("/z", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
+		_, _ = w.Write(body)
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	tsURL, _ := url.Parse(ts.URL)
+	backendAddr := tsURL.Host
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	hServer, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+	require.NoError(t, err)
+	defer hServer.Close()
+
+	hClient, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+	require.NoError(t, err)
+	defer hClient.Close()
+
+	hServer.SetStreamHandler(proxyProtocolID, func(s network.Stream) {
+		srv := NewServer(s)
+		if srv == nil {
+			return
+		}
+		if err := srv.Accept(); err != nil {
+			return
+		}
+		_ = srv.Serve(context.Background())
+	})
+
+	err = hClient.Connect(ctx, peer.AddrInfo{ID: hServer.ID(), Addrs: hServer.Addrs()})
+	require.NoError(t, err)
+
+	allowCtx := network.WithAllowLimitedConn(ctx, proxyProtocolIDStr)
+	ctrl, err := hClient.NewStream(allowCtx, hServer.ID(), proxyProtocolID)
+	require.NoError(t, err)
+	defer ctrl.Close()
+
+	client := NewClient(hClient.ID().String(), ctrl)
+	require.NotNil(t, client)
+	require.NoError(t, client.Connect())
+	defer client.CloseAll()
+
+	// Create a real TCP pair so we can CloseWrite on browser side
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer ln.Close()
+
+	serverConnCh := make(chan net.Conn, 1)
+	go func() {
+		c, _ := ln.Accept()
+		serverConnCh <- c
+	}()
+
+	localConn, err := net.Dial("tcp", ln.Addr().String())
+	require.NoError(t, err)
+	defer localConn.Close()
+
+	browserConn := <-serverConnCh
+	defer browserConn.Close()
+
+	_, err = client.OpenWithLocalConn("p-http-halfclose", backendAddr, "tcp", localConn)
+	require.NoError(t, err)
+
+	bw := bufio.NewWriter(browserConn)
+	br := bufio.NewReader(browserConn)
+
+	fmt.Fprintf(bw, "GET /z HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n")
+	bw.Flush()
+
+	// Half-close upload side (FIN) while keeping read open
+	if tcpConn, ok := browserConn.(*net.TCPConn); ok {
+		_ = tcpConn.CloseWrite()
+	}
+
+	resp, err := http.ReadResponse(br, &http.Request{Method: "GET"})
+	require.NoError(t, err)
+	data, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	require.NoError(t, err)
+	assert.Equal(t, len(body), len(data))
+	assert.True(t, bytes.Equal(body, data))
+}
+
+// TestProxyHTTPChunked ensures chunked responses arrive intact over the proxy.
+func TestProxyHTTPChunked(t *testing.T) {
+	chunks := []string{"hello ", "chunked ", "world"}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/chunked", func(w http.ResponseWriter, r *http.Request) {
+		flusher, _ := w.(http.Flusher)
+		w.Header().Set("Content-Type", "text/plain")
+		for _, c := range chunks {
+			_, _ = w.Write([]byte(c))
+			if flusher != nil {
+				flusher.Flush()
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	tsURL, _ := url.Parse(ts.URL)
+	backendAddr := tsURL.Host
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	hServer, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+	require.NoError(t, err)
+	defer hServer.Close()
+
+	hClient, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+	require.NoError(t, err)
+	defer hClient.Close()
+
+	hServer.SetStreamHandler(proxyProtocolID, func(s network.Stream) {
+		srv := NewServer(s)
+		if srv == nil {
+			return
+		}
+		if err := srv.Accept(); err != nil {
+			return
+		}
+		_ = srv.Serve(context.Background())
+	})
+
+	err = hClient.Connect(ctx, peer.AddrInfo{ID: hServer.ID(), Addrs: hServer.Addrs()})
+	require.NoError(t, err)
+
+	allowCtx := network.WithAllowLimitedConn(ctx, proxyProtocolIDStr)
+	ctrl, err := hClient.NewStream(allowCtx, hServer.ID(), proxyProtocolID)
+	require.NoError(t, err)
+	defer ctrl.Close()
+
+	client := NewClient(hClient.ID().String(), ctrl)
+	require.NotNil(t, client)
+	require.NoError(t, client.Connect())
+	defer client.CloseAll()
+
+	localConn, browserConn := net.Pipe()
+	defer browserConn.Close()
+
+	_, err = client.OpenWithLocalConn("p-http-chunked", backendAddr, "tcp", localConn)
+	require.NoError(t, err)
+
+	bw := bufio.NewWriter(browserConn)
+	br := bufio.NewReader(browserConn)
+
+	fmt.Fprintf(bw, "GET /chunked HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n")
+	bw.Flush()
+
+	resp, err := http.ReadResponse(br, &http.Request{Method: "GET"})
+	require.NoError(t, err)
+	data, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	require.NoError(t, err)
+
+	assert.Equal(t, strings.Join(chunks, ""), string(data))
+}
+
+// TestProxyHTTPManyParallel stresses many concurrent short requests to catch
+// racey teardown issues that could surface as ERR_EMPTY_RESPONSE.
+func TestProxyHTTPManyParallel(t *testing.T) {
+	var bodies [][]byte
+	for i := 0; i < 10; i++ {
+		size := 16*1024 + i*4096
+		bodies = append(bodies, bytes.Repeat([]byte{byte('a' + i)}, size))
+	}
+
+	mux := http.NewServeMux()
+	for i, b := range bodies {
+		path := fmt.Sprintf("/r%d", i)
+		body := b
+		mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
+			_, _ = w.Write(body)
+		})
+	}
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	tsURL, _ := url.Parse(ts.URL)
+	backendAddr := tsURL.Host
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	hServer, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+	require.NoError(t, err)
+	defer hServer.Close()
+
+	hClient, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+	require.NoError(t, err)
+	defer hClient.Close()
+
+	hServer.SetStreamHandler(proxyProtocolID, func(s network.Stream) {
+		srv := NewServer(s)
+		if srv == nil {
+			return
+		}
+		if err := srv.Accept(); err != nil {
+			return
+		}
+		_ = srv.Serve(context.Background())
+	})
+
+	err = hClient.Connect(ctx, peer.AddrInfo{ID: hServer.ID(), Addrs: hServer.Addrs()})
+	require.NoError(t, err)
+
+	allowCtx := network.WithAllowLimitedConn(ctx, proxyProtocolIDStr)
+	ctrl, err := hClient.NewStream(allowCtx, hServer.ID(), proxyProtocolID)
+	require.NoError(t, err)
+	defer ctrl.Close()
+
+	client := NewClient(hClient.ID().String(), ctrl)
+	require.NotNil(t, client)
+	require.NoError(t, client.Connect())
+	defer client.CloseAll()
+
+	var wg sync.WaitGroup
+	wg.Add(len(bodies))
+
+	for i, expected := range bodies {
+		i, expected := i, expected
+		go func() {
+			defer wg.Done()
+			localConn, browserConn := net.Pipe()
+			defer browserConn.Close()
+			defer localConn.Close()
+
+			_, err := client.OpenWithLocalConn(fmt.Sprintf("p-http-par-%d", i), backendAddr, "tcp", localConn)
+			require.NoError(t, err)
+
+			bw := bufio.NewWriter(browserConn)
+			br := bufio.NewReader(browserConn)
+
+			fmt.Fprintf(bw, "GET /r%d HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n", i)
+			bw.Flush()
+
+			resp, err := http.ReadResponse(br, &http.Request{Method: "GET"})
+			require.NoError(t, err)
+			data, err := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			require.NoError(t, err)
+			assert.Equal(t, len(expected), len(data))
+			assert.True(t, bytes.Equal(expected, data))
+		}()
+	}
+
+	wg.Wait()
 }
 
 // TestLibp2pServerAccept tests server handshake with libp2p stream

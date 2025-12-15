@@ -8,6 +8,7 @@ import (
 	"stellar/p2p/node"
 	"stellar/p2p/protocols/proxy/service"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/network"
@@ -25,6 +26,9 @@ type ProxyService struct {
 	cancel   context.CancelFunc
 	client   *service.Client
 	clientMu sync.Mutex
+	// connCounter ensures each proxied TCP connection uses a unique proxy ID so
+	// concurrent browser fetches don't stomp each other's streams.
+	connCounter uint64
 }
 
 // NewProxyService creates a new client-side proxy service.
@@ -114,6 +118,10 @@ func (p *ProxyService) Serve() error {
 		logger.Warnf("Failed to open local port to listen: %v", err)
 		return err
 	}
+	// Update port in case caller passed 0 to pick a free port.
+	if tcpAddr, ok := listener.Addr().(*net.TCPAddr); ok {
+		p.Port = uint64(tcpAddr.Port)
+	}
 
 	logger.Infof("Proxy listening on %v for %v", laddr, p.DestAddr)
 
@@ -168,7 +176,7 @@ func (p *ProxyService) acceptConnection(conn *net.TCPConn, id string, laddr *net
 	defer conn.Close()
 
 	if _, deviceErr := p.node.GetDevice(id); deviceErr != nil {
-		p.Close()
+		logger.Warnf("Device %v unavailable: %v", id, deviceErr)
 		return
 	}
 
@@ -178,7 +186,9 @@ func (p *ProxyService) acceptConnection(conn *net.TCPConn, id string, laddr *net
 		return
 	}
 
-	proxyID := fmt.Sprintf("%s:%d", id, p.Port)
+	// Use a unique proxy ID per accepted connection to avoid replacing active
+	// proxies when multiple browser connections occur in parallel.
+	proxyID := p.nextProxyID(id)
 	_, err = client.OpenWithLocalConn(proxyID, p.DestAddr, "tcp", conn)
 	if err != nil {
 		logger.Errorf("Failed to open proxy: %v", err)
@@ -187,4 +197,9 @@ func (p *ProxyService) acceptConnection(conn *net.TCPConn, id string, laddr *net
 
 	logger.Debugf("Proxy connection established: %s -> %s", proxyID, p.DestAddr)
 	<-p.ctx.Done()
+}
+
+// nextProxyID returns a per-connection unique proxy identifier.
+func (p *ProxyService) nextProxyID(base string) string {
+	return fmt.Sprintf("%s:%d:%d", base, p.Port, atomic.AddUint64(&p.connCounter, 1))
 }

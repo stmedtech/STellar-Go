@@ -126,6 +126,15 @@ func (s *Server) handleOpen(handshake *protocol.HandshakePacket) error {
 
 	// Assign stream ID and send success response
 	streamID := s.NextStreamID()
+
+	// Pre-create the server-side stream so the forwarder can start immediately
+	// and the client-side creation will pair with it.
+	if s.Multiplexer() != nil {
+		if _, err := s.Multiplexer().OpenStreamWithID(streamID); err != nil {
+			return s.sendError(request.ProxyID, fmt.Sprintf("allocate stream: %v", err))
+		}
+	}
+
 	if err := s.sendSuccess(request.ProxyID, streamID); err != nil {
 		remoteConn.Close()
 		return err

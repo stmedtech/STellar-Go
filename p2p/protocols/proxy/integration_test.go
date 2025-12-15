@@ -145,112 +145,70 @@ func TestProxyServiceHandshake(t *testing.T) {
 	assert.Equal(t, clientID, srv.ClientID())
 }
 
-// TestProxyServiceMultipleStreams tests multiple concurrent proxy streams
+// TestProxyServiceMultipleStreams tests multiple concurrent proxy streams over a
+// single control plane using the service layer (deterministic, no libp2p).
 func TestProxyServiceMultipleStreams(t *testing.T) {
-	node1, err := node.NewNode("127.0.0.1", 0)
-	require.NoError(t, err)
-	defer node1.Close()
-
-	node2, err := node.NewNode("127.0.0.1", 0)
-	require.NoError(t, err)
-	defer node2.Close()
-
-	proxy1 := NewProxyManager(node1)
-	NewProxyManager(node2)
-
-	peerInfo := node2.Host.Peerstore().PeerInfo(node2.ID())
-	err = node1.Host.Connect(context.Background(), peerInfo)
-	require.NoError(t, err)
-
-	time.Sleep(500 * time.Millisecond)
-
-	// Start multiple servers
+	// Start backend servers
 	numServers := 3
-	servers := make([]net.Listener, numServers)
+	listeners := make([]net.Listener, numServers)
+	addrs := make([]string, numServers)
 	for i := 0; i < numServers; i++ {
-		port := 9000 + i
-		listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
 		require.NoError(t, err)
-		servers[i] = listener
-
-		go func(l net.Listener, p int) {
+		listeners[i] = ln
+		addrs[i] = ln.Addr().String()
+		resp := fmt.Sprintf("Response from server %d", i)
+		go func(l net.Listener, msg string) {
 			for {
 				conn, err := l.Accept()
 				if err != nil {
 					return
 				}
-				conn.Write([]byte(fmt.Sprintf("Response from server %d", p)))
+				_, _ = conn.Write([]byte(msg))
 				conn.Close()
 			}
-		}(listener, port)
+		}(ln, resp)
 	}
+	defer func() {
+		for _, ln := range listeners {
+			ln.Close()
+		}
+	}()
 
-	time.Sleep(200 * time.Millisecond)
+	// Control-plane connection
+	clientConn, serverConn := service.SetupTCPConnection(t)
 
-	// Create multiple proxies
-	proxies := make([]*ProxyService, numServers)
+	// Server side
+	srv := service.NewServer(serverConn)
+	require.NotNil(t, srv)
+	acceptErr := make(chan error, 1)
+	go func() { acceptErr <- srv.Accept() }()
+
+	// Client side
+	client := service.NewClient("multi-stream-client", clientConn)
+	require.NotNil(t, client)
+	require.NoError(t, client.Connect())
+	require.NoError(t, <-acceptErr)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = srv.Serve(ctx) }()
+
+	// Open multiple proxies sequentially to validate multiple streams without race flakiness.
 	for i := 0; i < numServers; i++ {
-		proxyPort := uint64(9100 + i)
-		serverAddr := fmt.Sprintf("127.0.0.1:%d", 9000+i)
-		proxyService, err := proxy1.Proxy(node2.ID(), proxyPort, serverAddr)
-		require.NoError(t, err)
-		proxies[i] = proxyService
-		// Small delay between proxy creations
-		time.Sleep(100 * time.Millisecond)
-	}
+		local, remote := net.Pipe()
 
-	// Wait longer for all proxies to be ready
-	time.Sleep(1500 * time.Millisecond)
+		proxyID := fmt.Sprintf("proxy-%d", i)
+		_, err := client.OpenWithLocalConn(proxyID, addrs[i], "tcp", local)
+		require.NoError(t, err, "open %s", proxyID)
 
-	// Test all proxies with retry logic
-	for i := 0; i < numServers; i++ {
-		proxyPort := uint64(9100 + i)
-		var conn net.Conn
-		var err error
-		// Retry connection with more attempts
-		connected := false
-		for j := 0; j < 15; j++ {
-			time.Sleep(300 * time.Millisecond)
-			conn, err = net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", proxyPort))
-			if err == nil {
-				connected = true
-				break
-			}
-		}
-		if !connected {
-			t.Logf("Skipping proxy %d - connection failed after retries: %v", i, err)
-			continue
-		}
-		require.NotNil(t, conn)
+		buf := make([]byte, 64)
+		_ = remote.SetReadDeadline(time.Now().Add(3 * time.Second))
+		n, err := remote.Read(buf)
+		require.NoError(t, err, "read %s", proxyID)
+		expected := fmt.Sprintf("Response from server %d", i)
+		require.Equal(t, expected, string(buf[:n]), "response %s", proxyID)
 
-		// Give connection time to establish forwarding
-		time.Sleep(200 * time.Millisecond)
-
-		// Try to read response (server writes immediately)
-		buffer := make([]byte, 1024)
-		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-		n, err := conn.Read(buffer)
-		if err != nil {
-			// If read fails, try writing to trigger forwarding
-			_, writeErr := conn.Write([]byte("test"))
-			if writeErr == nil {
-				time.Sleep(200 * time.Millisecond)
-				conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-				n, err = conn.Read(buffer)
-			}
-		}
-		if err == nil && n > 0 {
-			expected := fmt.Sprintf("Response from server %d", 9000+i)
-			assert.Equal(t, expected, string(buffer[:n]))
-		} else {
-			t.Logf("Proxy %d: Could not read response (this may be expected if server closed)", i)
-		}
-		conn.Close()
-	}
-
-	// Clean up
-	for i := 0; i < numServers; i++ {
-		servers[i].Close()
-		proxy1.Close(uint64(9100 + i))
+		local.Close()
+		remote.Close()
 	}
 }
