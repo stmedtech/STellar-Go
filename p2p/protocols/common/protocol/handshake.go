@@ -39,6 +39,8 @@ const (
 	HandshakeTypeComputeListEnvsResponse HandshakeType = "compute_list_envs_resp"
 	HandshakeTypeComputeLogOpen          HandshakeType = "compute_log_open"
 	HandshakeTypeComputeLogClose         HandshakeType = "compute_log_close"
+	HandshakeTypeComputeStatus           HandshakeType = "compute_status"
+	HandshakeTypeComputeStatusResponse   HandshakeType = "compute_status_resp"
 	HandshakeTypeComputeError            HandshakeType = "compute_error"
 )
 
@@ -115,18 +117,21 @@ type ComputeHelloAckPayload struct {
 }
 
 type ComputeRunRequest struct {
-	RunID       string            `json:"run_id"`
-	Command     string            `json:"command"`
-	WorkingDir  string            `json:"working_dir,omitempty"`
-	Env         map[string]string `json:"env,omitempty"`
-	PayloadPath string            `json:"payload_path,omitempty"` // optional artifact path
+	RunID      string            `json:"run_id"`      // Unique execution ID
+	Command    string            `json:"command"`     // Command to execute
+	Args       []string          `json:"args"`        // Command arguments
+	Env        map[string]string `json:"env"`         // Environment variables (optional)
+	WorkingDir string            `json:"working_dir"` // Working directory (optional)
 }
 
 type ComputeRunResponse struct {
-	RunID       string `json:"run_id"`
-	Accepted    bool   `json:"accepted"`
-	LogStreamID uint32 `json:"log_stream_id,omitempty"` // Stream ID for log data
-	Error       string `json:"error,omitempty"`
+	RunID    string `json:"run_id"`
+	Accepted bool   `json:"accepted"`
+	StdinID  uint32 `json:"stdin_id"`  // Stream ID for stdin (0 = no stdin)
+	StdoutID uint32 `json:"stdout_id"` // Stream ID for stdout
+	StderrID uint32 `json:"stderr_id"` // Stream ID for stderr
+	LogID    uint32 `json:"log_id"`    // Stream ID for audit logs
+	Error    string `json:"error,omitempty"`
 }
 
 type ComputeCancelRequest struct {
@@ -155,6 +160,19 @@ type ComputeLogOpen struct {
 
 type ComputeLogClose struct {
 	RunID string `json:"run_id"`
+}
+
+type ComputeStatusRequest struct {
+	RunID string `json:"run_id"`
+}
+
+type ComputeStatusResponse struct {
+	RunID     string `json:"run_id"`
+	Status    string `json:"status"` // "running", "completed", "canceled", "failed"
+	ExitCode  *int   `json:"exit_code,omitempty"`
+	StartTime string `json:"start_time,omitempty"`
+	EndTime   string `json:"end_time,omitempty"`
+	Error     string `json:"error,omitempty"`
 }
 
 type ComputeErrorPayload struct {
@@ -468,12 +486,15 @@ func NewComputeRunPacket(req ComputeRunRequest) (*Packet, error) {
 }
 
 // NewComputeRunResponsePacket creates a compute_run_response packet
-func NewComputeRunResponsePacket(runID string, accepted bool, logStreamID uint32, errMsg string) (*Packet, error) {
+func NewComputeRunResponsePacket(runID string, accepted bool, stdinID, stdoutID, stderrID, logID uint32, errMsg string) (*Packet, error) {
 	return NewHandshakePacket(HandshakeTypeComputeRunResponse, ComputeRunResponse{
-		RunID:       runID,
-		Accepted:    accepted,
-		LogStreamID: logStreamID,
-		Error:       errMsg,
+		RunID:    runID,
+		Accepted: accepted,
+		StdinID:  stdinID,
+		StdoutID: stdoutID,
+		StderrID: stderrID,
+		LogID:    logID,
+		Error:    errMsg,
 	})
 }
 
@@ -502,6 +523,16 @@ func NewComputeListEnvsResponsePacket(envs map[string]string, errMsg string) (*P
 		Envs:  envs,
 		Error: errMsg,
 	})
+}
+
+// NewComputeStatusPacket creates a compute_status packet
+func NewComputeStatusPacket(req ComputeStatusRequest) (*Packet, error) {
+	return NewHandshakePacket(HandshakeTypeComputeStatus, req)
+}
+
+// NewComputeStatusResponsePacket creates a compute_status_response packet
+func NewComputeStatusResponsePacket(resp ComputeStatusResponse) (*Packet, error) {
+	return NewHandshakePacket(HandshakeTypeComputeStatusResponse, resp)
 }
 
 // NewComputeErrorPacket creates a compute_error packet
