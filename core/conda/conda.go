@@ -39,18 +39,10 @@ func init() {
 	UpdateCondaPath()
 }
 
+// CondaDownloadPath is deprecated - use GetCondaDownloadPath() from infrastructure.go instead
+// This function is kept for backward compatibility during Phase 1 transition
 func CondaDownloadPath() (string, error) {
-	appDir, fileErr := constant.StellarPath()
-	if fileErr != nil {
-		return "", fileErr
-	}
-
-	condaPath := filepath.Join(appDir, "conda")
-	if fileErr = os.MkdirAll(condaPath, os.ModePerm); fileErr != nil {
-		return "", fileErr
-	}
-
-	return condaPath, nil
+	return GetCondaDownloadPath()
 }
 
 func commandExists(cmd string) bool {
@@ -58,29 +50,10 @@ func commandExists(cmd string) bool {
 	return err == nil
 }
 
+// getPath is deprecated - use FindCondaPath() from infrastructure.go instead
+// This function is kept for backward compatibility during Phase 1 transition
 func getPath() (string, error) {
-	if os := runtime.GOOS; os == "windows" {
-		if condaPath := "C:\\ProgramData\\miniconda3\\Scripts\\conda.exe"; commandExists(condaPath) {
-			return condaPath, nil
-		}
-		if condaPath := "C:\\ProgramData\\miniconda3\\_conda.exe"; commandExists(condaPath) {
-			return condaPath, nil
-		}
-	}
-
-	if condaDir, fileErr := CondaDownloadPath(); fileErr != nil {
-		return "", fileErr
-	} else {
-		if condaPath := filepath.Join(condaDir, "_conda"); commandExists(condaPath) {
-			return filepath.Join(condaDir, "bin", "conda"), nil
-		}
-
-		if condaPath := "conda"; commandExists(condaPath) {
-			return condaPath, nil
-		}
-	}
-
-	return "", fmt.Errorf("conda executable not found")
+	return FindCondaPath()
 }
 
 type saveOutput struct {
@@ -106,25 +79,11 @@ func runCommand(cmd *exec.Cmd) ([]byte, error) {
 	return so.savedOutput, nil
 }
 
+// Version is deprecated - use GetCondaVersion() from infrastructure.go instead
+// This function is kept for backward compatibility during Phase 1 transition
+// NOTE: Will be refactored in Phase 3 to use Executor interface
 func Version(condaPath string) (string, error) {
-	err := fmt.Errorf("version not supported")
-
-	cmd := exec.Command(condaPath, "--version")
-	stdout, cmdErr := runCommand(cmd)
-	if cmdErr != nil {
-		return "", cmdErr
-	}
-
-	re, regErr := regexp.Compile(`\d+.\d+.\d+`)
-	if regErr != nil {
-		return "", regErr
-	}
-
-	if version := re.FindString(string(stdout)); version == "" {
-		return "", err
-	} else {
-		return version, nil
-	}
+	return GetCondaVersion(condaPath)
 }
 
 func EnvList(condaPath string) (map[string]string, error) {
@@ -337,41 +296,10 @@ func Download(folder, url string) (string, error) {
 	}
 }
 
+// DownloadUrl is deprecated - use DownloadCondaInstaller() from infrastructure.go instead
+// This function is kept for backward compatibility during Phase 1 transition
 func DownloadUrl(pythonVersion, condaVersion string) (string, error) {
-	url := fmt.Sprintf("https://repo.anaconda.com/miniconda/Miniconda3-%s_%s-", pythonVersion, condaVersion)
-
-	switch os := runtime.GOOS; os {
-	case "darwin":
-		switch arch := runtime.GOARCH; arch {
-		case "amd64":
-			url += "MacOSX-x86_64.sh"
-		case "arm":
-		case "arm64":
-			url += "MacOSX-arm64.sh"
-		default:
-			return "", fmt.Errorf("get download url failed due to unsupported architecture: %v", arch)
-		}
-	case "linux":
-		switch arch := runtime.GOARCH; arch {
-		case "amd64":
-			url += "Linux-x86_64.sh"
-		case "arm":
-		case "arm64":
-			url += "Linux-aarch64.sh"
-		default:
-			return "", fmt.Errorf("get download url failed due to unsupported architecture: %v", arch)
-		}
-	case "windows":
-		switch arch := runtime.GOARCH; arch {
-		case "amd64":
-			url += "Windows-x86_64.exe"
-		default:
-			return "", fmt.Errorf("get download url failed due to unsupported architecture: %v", arch)
-		}
-	default:
-		return "", fmt.Errorf("get download url failed due to unsupported OS: %v", os)
-	}
-	return url, nil
+	return DownloadCondaInstaller(pythonVersion, condaVersion)
 }
 
 func Install(version string) error {
