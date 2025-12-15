@@ -15,9 +15,9 @@ const (
 	StellarEchoDeviceInfo     string = "deviceInfo"
 )
 
-const StellarProxyProtocol protocol.ID = "/stellar-proxy/1.0.0"
+const StellarProxyProtocol protocol.ID = "/stellar-proxy/1.1.0"
 
-const StellarFileProtocol protocol.ID = "/stellar-file/1.0.1"
+const StellarFileProtocol protocol.ID = "/stellar-file/1.1.0"
 
 const (
 	StellarFileUnknownCommand string = "unkown"
