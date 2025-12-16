@@ -636,18 +636,58 @@ func GetCondaDownloadPath() (string, error)
 - `p2p/protocols/compute/compute.go` (updated)
 - `p2p/protocols/compute/service/conda_integration_test.go` (new)
 
-### Phase 6: Client Integration & GUI
-**Goal**: Expose conda operations in GUI/API
+### Phase 6: Unified Conda Operations & Remote Support
+**Goal**: Extend CondaService with all pre-conda features, add server-side conda command routing, and create unified interface for local/remote operations
 
-**Approach**: TDD - Write tests first, then implement UI
+**Approach**: TDD - Write tests first, then implement
 
-**Tasks:**
-1. Create/update `core/gui/gui_test.go` with GUI tests
-2. Create/update `core/socket/socket_test.go` with API tests
-3. Update GUI to use `CondaService`
-4. Add conda environment management UI
-5. Add Python script execution UI
-6. Update API endpoints (if needed)
+**Sub-Phases:**
+- **Phase 6A**: Extend CondaService with pre-conda features
+- **Phase 6B**: Add server-side conda command routing
+- **Phase 6C**: Create unified CondaOperations interface
+- **Phase 6D**: Update CLI to use unified interface
+
+**Tasks (Phase 6A):**
+1. Add pre-conda methods to CondaService:
+   - `InstallConda()` - Remote conda installation
+   - `GetCondaPath()` - Get remote conda path  
+   - `GetCondaVersion()` - Get remote conda version
+   
+   **Note**: `DownloadCondaInstaller()` is excluded as it's an internal implementation detail. `InstallConda()` will handle the full installation process internally, including URL generation and download.
+   
+2. Add missing environment management methods if needed
+3. Write comprehensive tests for all new methods
+
+**Tasks (Phase 6B):**
+1. **Server Command Routing (Option 1 - Automatic Detection)**:
+   - Add automatic conda command detection in server
+   - Resolve conda path using `FindCondaPath()` on server
+   - Route conda commands to absolute path automatically
+   - Handle errors gracefully (conda not found)
+
+2. **Remove CONDA_ENV Environment Variable**:
+   - Update CondaExecutor to remove CONDA_ENV dependency (or simplify/remove CondaExecutor)
+   - Update CondaService methods to use `conda run -n <envName>` directly instead of setting CONDA_ENV
+   - All methods already take explicit `envName` parameter (like RunPython/RunScript)
+   - Update all tests to remove CONDA_ENV usage
+
+3. **Testing**:
+   - Write integration tests for command routing
+   - Update existing tests to use explicit envName parameters
+   - Verify backward compatibility where applicable
+
+**Tasks (Phase 6C):**
+1. Define `CondaOperations` interface
+2. Implement `LocalCondaOps` using `CondaManager`
+3. Implement `RemoteCondaOps` using `CondaService`
+4. Create factory function to choose strategy
+5. Write tests for unified interface
+
+**Tasks (Phase 6D):**
+1. Update CLI to use `CondaOperations` interface
+2. Add remote device selection
+3. Route commands to local or remote based on context
+4. Maintain backward compatibility
 
 **Test Cases (Must All Pass):**
 
