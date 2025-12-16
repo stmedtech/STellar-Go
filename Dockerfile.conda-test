@@ -1,0 +1,49 @@
+# Dockerfile for running conda tests with conda pre-installed
+FROM golang:1.24
+
+# Install system dependencies
+RUN apt update && \
+    apt install -y \
+    pciutils \
+    gcc \
+    libgl1-mesa-dev \
+    xorg-dev \
+    libxkbcommon-dev \
+    wget \
+    bzip2 \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Miniconda
+ENV CONDA_DIR=/opt/conda
+ENV PATH=$CONDA_DIR/bin:$PATH
+RUN wget --quiet https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O /tmp/miniconda.sh && \
+    bash /tmp/miniconda.sh -b -p $CONDA_DIR && \
+    rm /tmp/miniconda.sh && \
+    conda clean -afy && \
+    find $CONDA_DIR -follow -type f -name '*.a' -delete && \
+    find $CONDA_DIR -follow -type f -name '*.pyc' -delete && \
+    conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main && \
+    conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
+
+# Initialize conda
+RUN conda init bash && \
+    echo 'conda activate base' >> ~/.bashrc
+
+# Set working directory
+WORKDIR /app
+
+# Copy go mod files
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy source code
+COPY . .
+
+# Set environment variable to indicate we're in Docker
+ENV IN_DOCKER=true
+ENV CONDATEST_ENABLED=true
+
+# Default command: run conda tests with longer timeout for slow operations
+CMD ["go", "test", "./core/conda/...", "-v", "-timeout", "10m"]
+

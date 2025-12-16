@@ -344,8 +344,8 @@ func (c *Client) Cancel(ctx context.Context, runID string) error {
 		return fmt.Errorf("cancel failed: %s", cancelResponse.Error)
 	}
 
-	return nil
-}
+		return nil
+	}
 
 // Status returns the status of a command execution
 func (c *Client) Status(ctx context.Context, runID string) (*StatusResponse, error) {
@@ -364,7 +364,7 @@ func (c *Client) Status(ctx context.Context, runID string) (*StatusResponse, err
 	requestPacket, err := protocol.NewComputeStatusPacket(req)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
-	}
+}
 
 	response, err := c.SendRequest(ctx, requestPacket, matchComputeStatusResponse(runID))
 	if err != nil {

@@ -63,8 +63,8 @@ func requireNonWindows(t *testing.T) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("not supported on windows")
+		}
 	}
-}
 
 type logEntry struct {
 	RunID string `json:"run_id"`
@@ -484,7 +484,7 @@ func TestIntegration_StdoutStderr_InterleavingAndLogs(t *testing.T) {
 
 	require.NoError(t, <-h.Done)
 	assert.Equal(t, 0, <-h.ExitCode)
-}
+		}
 
 func TestIntegration_StdinWriteAfterCloseFails(t *testing.T) {
 	p := startComputePair(t)

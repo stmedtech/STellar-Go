@@ -116,6 +116,11 @@ func TestFindCondaPath_MultiplePaths(t *testing.T) {
 
 // TestGetCondaVersion_Success tests parsing version from conda --version
 func TestGetCondaVersion_Success(t *testing.T) {
+	// Run in Docker where conda is available
+	if !ShouldRunCondaTests() {
+		t.Skip("Skipping TestGetCondaVersion_Success - requires conda. Run in Docker or set CONDATEST_ENABLED=true")
+	}
+
 	// Test with a mock version string
 	// Since we can't easily mock exec.Command, we test the parsing logic
 	// by testing with actual conda if available
@@ -147,6 +152,11 @@ func TestGetCondaVersion_CommandFails(t *testing.T) {
 
 // TestGetCondaVersion_EmptyOutput tests handling empty output
 func TestGetCondaVersion_EmptyOutput(t *testing.T) {
+	// Run in Docker where conda is available
+	if !ShouldRunCondaTests() {
+		t.Skip("Skipping TestGetCondaVersion_EmptyOutput - requires conda. Run in Docker or set CONDATEST_ENABLED=true")
+	}
+
 	// This would require mocking, but we test the error path
 	condaPath, err := FindCondaPath()
 	if err != nil {
@@ -311,6 +321,11 @@ func TestFindCondaPath_Symlink(t *testing.T) {
 
 // TestGetCondaVersion_NonNumericVersion tests handling non-standard version formats
 func TestGetCondaVersion_NonNumericVersion(t *testing.T) {
+	// Run in Docker where conda is available
+	if !ShouldRunCondaTests() {
+		t.Skip("Skipping TestGetCondaVersion_NonNumericVersion - requires conda. Run in Docker or set CONDATEST_ENABLED=true")
+	}
+
 	condaPath, err := FindCondaPath()
 	if err != nil {
 		t.Skip("Conda not available")
@@ -353,6 +368,11 @@ func TestDownloadUrl_InvalidVersion(t *testing.T) {
 
 // TestGetCondaVersion_WithRealConda tests version detection with real conda if available
 func TestGetCondaVersion_WithRealConda(t *testing.T) {
+	// Run in Docker where conda is available
+	if !ShouldRunCondaTests() {
+		t.Skip("Skipping TestGetCondaVersion_WithRealConda - requires conda. Run in Docker or set CONDATEST_ENABLED=true")
+	}
+
 	condaPath, err := FindCondaPath()
 	if err != nil {
 		t.Skip("Conda not available for version test")

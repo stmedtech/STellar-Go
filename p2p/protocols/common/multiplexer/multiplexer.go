@@ -130,7 +130,7 @@ func (sr *streamReader) Read(p []byte) (n int, err error) {
 	select {
 	case data, ok := <-sr.dataChan:
 		if !ok || len(data) == 0 {
-			return 0, io.EOF
+		return 0, io.EOF
 		}
 		n = copy(p, data)
 		if n < len(data) {

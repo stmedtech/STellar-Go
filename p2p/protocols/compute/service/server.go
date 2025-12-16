@@ -104,7 +104,7 @@ func (s *Server) Close() error {
 			// cancel process
 			if ri.CancelFunc != nil {
 				ri.CancelFunc()
-			}
+		}
 			// best-effort: notify client
 			_ = s.sendStatusSuccess(ri.RunID, ri.Status, ri.ExitCode, ri.StartTime, ri.EndTime)
 		}
@@ -112,8 +112,8 @@ func (s *Server) Close() error {
 	}
 
 	// Close underlying base server (control plane + multiplexer)
-	return s.BaseServer.Close()
-}
+		return s.BaseServer.Close()
+	}
 
 // computeHandshakeHandler implements server-side handshake handling for compute protocol
 type computeHandshakeHandler struct{}
@@ -337,7 +337,7 @@ func (s *Server) handleStatus(packet *protocol.HandshakePacket) error {
 
 	if req.RunID == "" {
 		return s.sendStatusError("", "run_id is required")
-	}
+		}
 
 	s.runsMu.RLock()
 	runInfo, exists := s.runs[req.RunID]
@@ -482,7 +482,7 @@ func (s *Server) cleanupRun(runID string) {
 	s.runsMu.Lock()
 	defer s.runsMu.Unlock()
 	delete(s.runs, runID)
-}
+	}
 
 // Response helpers
 
@@ -492,7 +492,7 @@ func (s *Server) sendRunSuccess(runID string, stdinID, stdoutID, stderrID, logID
 		return err
 	}
 	return s.ControlConn().WritePacket(packet)
-}
+	}
 
 func (s *Server) sendRunError(runID, errMsg string) error {
 	packet, err := protocol.NewComputeRunResponsePacket(runID, false, 0, 0, 0, 0, errMsg)

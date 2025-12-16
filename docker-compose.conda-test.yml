@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  conda-test:
+    build:
+      context: .
+      dockerfile: Dockerfile.conda-test
+    volumes:
+      - .:/app
+      - go-mod-cache:/go/pkg/mod
+    environment:
+      - IN_DOCKER=true
+      - CONDATEST_ENABLED=true
+    command: go test ./core/conda/... -v -timeout 10m
+    # Override command with: docker-compose -f docker-compose.conda-test.yml run --rm conda-test <command>
+
+volumes:
+  go-mod-cache:
+

@@ -320,7 +320,7 @@ func BenchmarkNodeStructCreation(b *testing.B) {
 func TestNodeID(t *testing.T) {
 	// Test Node ID method
 	node := &Node{}
-
+	
 	// ID should panic when Host is nil
 	assert.Panics(t, func() {
 		node.ID()
@@ -330,7 +330,7 @@ func TestNodeID(t *testing.T) {
 func TestNodeClose(t *testing.T) {
 	// Test Node Close method
 	node := &Node{}
-
+	
 	// Close should panic when Cancel, Host, or DHT are nil
 	assert.Panics(t, func() {
 		node.Close()
@@ -343,12 +343,12 @@ func TestNodeGetDevice(t *testing.T) {
 		discoveredDevices: make(map[string]Device),
 		healthyDevices:    make(map[string]Device),
 	}
-
+	
 	// Test getting non-existent device
 	device, err := node.GetDevice("non-existent")
 	assert.Error(t, err)
 	assert.Equal(t, Device{}, device)
-
+	
 	// Test getting existing device
 	testDevice := Device{
 		ID:             "test-peer",
@@ -358,7 +358,7 @@ func TestNodeGetDevice(t *testing.T) {
 		Timestamp:      time.Now(),
 	}
 	node.healthyDevices["test-device"] = testDevice
-
+	
 	device, err = node.GetDevice("test-device")
 	assert.NoError(t, err)
 	assert.Equal(t, testDevice, device)
@@ -367,7 +367,7 @@ func TestNodeGetDevice(t *testing.T) {
 func TestNodeStartMetricsServer(t *testing.T) {
 	// Test Node StartMetricsServer method
 	node := &Node{}
-
+	
 	// StartMetricsServer should not panic
 	assert.NotPanics(t, func() {
 		node.StartMetricsServer(8080)
@@ -377,7 +377,7 @@ func TestNodeStartMetricsServer(t *testing.T) {
 func TestNodeInitDHT(t *testing.T) {
 	// Test Node InitDHT method
 	node := &Node{}
-
+	
 	// InitDHT should panic when CTX or Host is nil
 	assert.Panics(t, func() {
 		node.InitDHT(false)
@@ -390,16 +390,16 @@ func TestNodeConnectDevice(t *testing.T) {
 		discoveredDevices: make(map[string]Device),
 		healthyDevices:    make(map[string]Device),
 	}
-
+	
 	// Create a test peer
 	_, pubKey, _ := crypto.GenerateKeyPairWithReader(crypto.Ed25519, 2048, rand.Reader)
 	peerID, _ := peer.IDFromPublicKey(pubKey)
-
+	
 	peerInfo := peer.AddrInfo{
 		ID:    peerID,
 		Addrs: []multiaddr.Multiaddr{},
 	}
-
+	
 	// ConnectDevice should panic when Host is nil
 	assert.Panics(t, func() {
 		node.ConnectDevice(peerInfo)
@@ -410,9 +410,9 @@ func TestNodeDiscoverDevices(t *testing.T) {
 	// Test Node DiscoverDevices method
 	// Skip this test as it starts goroutines that cause race conditions
 	t.Skip("Skipping due to goroutine race condition with libp2p advertising")
-
+	
 	node := &Node{}
-
+	
 	// DiscoverDevices should panic due to uninitialized fields
 	assert.Panics(t, func() {
 		node.DiscoverDevices()
@@ -425,7 +425,7 @@ func TestNodeHealthcheckDevices(t *testing.T) {
 		discoveredDevices: make(map[string]Device),
 		healthyDevices:    make(map[string]Device),
 	}
-
+	
 	// HealthcheckDevices should panic due to uninitialized CTX field
 	assert.Panics(t, func() {
 		node.HealthcheckDevices()
@@ -438,7 +438,7 @@ func TestNodeUpdateDevices(t *testing.T) {
 		discoveredDevices: make(map[string]Device),
 		healthyDevices:    make(map[string]Device),
 	}
-
+	
 	// UpdateDevices should not panic
 	assert.NotPanics(t, func() {
 		node.UpdateDevices()
@@ -448,11 +448,11 @@ func TestNodeUpdateDevices(t *testing.T) {
 func TestNodeGetEcho(t *testing.T) {
 	// Test Node GetEcho method
 	node := &Node{}
-
+	
 	// Create a test peer
 	_, pubKey, _ := crypto.GenerateKeyPairWithReader(crypto.Ed25519, 2048, rand.Reader)
 	peerID, _ := peer.IDFromPublicKey(pubKey)
-
+	
 	// GetEcho should panic when Host is nil
 	assert.Panics(t, func() {
 		node.GetEcho(peerID, "ping")
@@ -462,11 +462,11 @@ func TestNodeGetEcho(t *testing.T) {
 func TestNodePing(t *testing.T) {
 	// Test Node Ping method
 	node := &Node{}
-
+	
 	// Create a test peer
 	_, pubKey, _ := crypto.GenerateKeyPairWithReader(crypto.Ed25519, 2048, rand.Reader)
 	peerID, _ := peer.IDFromPublicKey(pubKey)
-
+	
 	// Ping should panic when Host is nil
 	assert.Panics(t, func() {
 		node.Ping(peerID)
@@ -476,11 +476,11 @@ func TestNodePing(t *testing.T) {
 func TestNodeProvide(t *testing.T) {
 	// Test Node Provide method
 	node := &Node{}
-
+	
 	// Create a test channel
 	peerChan := make(chan peer.AddrInfo, 1)
 	defer close(peerChan)
-
+	
 	// Provide should panic due to uninitialized fields
 	assert.Panics(t, func() {
 		node.Provide(peerChan)
@@ -490,16 +490,16 @@ func TestNodeProvide(t *testing.T) {
 func TestNodeDiscoverDevice(t *testing.T) {
 	// Test Node discoverDevice method (private method)
 	node := &Node{}
-
+	
 	// Create a test peer
 	_, pubKey, _ := crypto.GenerateKeyPairWithReader(crypto.Ed25519, 2048, rand.Reader)
 	peerID, _ := peer.IDFromPublicKey(pubKey)
-
+	
 	peerInfo := peer.AddrInfo{
 		ID:    peerID,
 		Addrs: []multiaddr.Multiaddr{},
 	}
-
+	
 	// discoverDevice should panic when Host is nil
 	assert.Panics(t, func() {
 		node.discoverDevice(peerInfo, nil)
@@ -509,7 +509,7 @@ func TestNodeDiscoverDevice(t *testing.T) {
 func TestNodeHealthCheckDevice(t *testing.T) {
 	// Test Node healthCheckDevice method (private method)
 	node := &Node{}
-
+	
 	testDevice := &Device{
 		ID:             "test-peer",
 		ReferenceToken: "test-token",
@@ -517,7 +517,7 @@ func TestNodeHealthCheckDevice(t *testing.T) {
 		SysInfo:        util.SystemInformation{},
 		Timestamp:      time.Now(),
 	}
-
+	
 	// healthCheckDevice should panic when Host is nil
 	assert.Panics(t, func() {
 		node.healthCheckDevice(testDevice)
@@ -528,18 +528,18 @@ func TestNodeWithContext(t *testing.T) {
 	// Test Node with context
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-
+	
 	node := &Node{
 		CTX:               ctx,
 		Cancel:            cancel,
 		discoveredDevices: make(map[string]Device),
 		healthyDevices:    make(map[string]Device),
 	}
-
+	
 	// Test that context is properly set
 	assert.NotNil(t, node.CTX)
 	assert.NotNil(t, node.Cancel)
-
+	
 	// Test GetDevice with context
 	device, err := node.GetDevice("non-existent")
 	assert.Error(t, err)
@@ -552,7 +552,7 @@ func TestNodeWithDevices(t *testing.T) {
 		discoveredDevices: make(map[string]Device),
 		healthyDevices:    make(map[string]Device),
 	}
-
+	
 	// Add multiple devices
 	device1 := Device{
 		ID:             "peer1",
@@ -561,7 +561,7 @@ func TestNodeWithDevices(t *testing.T) {
 		SysInfo:        util.SystemInformation{Platform: "test1"},
 		Timestamp:      time.Now(),
 	}
-
+	
 	device2 := Device{
 		ID:             "peer2",
 		ReferenceToken: "token2",
@@ -569,14 +569,14 @@ func TestNodeWithDevices(t *testing.T) {
 		SysInfo:        util.SystemInformation{Platform: "test2"},
 		Timestamp:      time.Now(),
 	}
-
+	
 	node.discoveredDevices["device1"] = device1
 	node.healthyDevices["device2"] = device2
-
+	
 	// Test getting devices - GetDevice only returns healthy devices
 	_, err := node.GetDevice("device1")
 	assert.Error(t, err) // device1 is discovered, not healthy
-
+	
 	retrievedDevice2, err := node.GetDevice("device2")
 	assert.NoError(t, err)
 	assert.Equal(t, device2, retrievedDevice2)
@@ -585,7 +585,7 @@ func TestNodeWithDevices(t *testing.T) {
 	retrievedDiscoveredDevice1, err := node.GetDiscoveredDevice("device1")
 	assert.NoError(t, err)
 	assert.Equal(t, device1, retrievedDiscoveredDevice1)
-
+	
 	// Test getting non-existent device
 	_, err = node.GetDevice("device3")
 	assert.Error(t, err)
@@ -597,17 +597,17 @@ func TestNodeConcurrentAccess(t *testing.T) {
 		discoveredDevices: make(map[string]Device),
 		healthyDevices:    make(map[string]Device),
 	}
-
+	
 	// Test concurrent device access with mutex to avoid race conditions
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	numGoroutines := 10
-
+	
 	for i := 0; i < numGoroutines; i++ {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-
+			
 			device := Device{
 				ID:             peer.ID(fmt.Sprintf("peer%d", id)),
 				ReferenceToken: fmt.Sprintf("token%d", id),
@@ -615,25 +615,25 @@ func TestNodeConcurrentAccess(t *testing.T) {
 				SysInfo:        util.SystemInformation{},
 				Timestamp:      time.Now(),
 			}
-
+			
 			// Use mutex to protect concurrent map access
 			mu.Lock()
 			node.healthyDevices[fmt.Sprintf("device%d", id)] = device
 			mu.Unlock()
-
+			
 			// Try to get the device
 			mu.Lock()
 			retrievedDevice, err := node.GetDevice(fmt.Sprintf("device%d", id))
 			mu.Unlock()
-
+			
 			if err == nil {
 				assert.Equal(t, device, retrievedDevice)
 			}
 		}(i)
 	}
-
+	
 	wg.Wait()
-
+	
 	// Verify all devices were added
 	devices := node.Devices()
 	assert.Len(t, devices, numGoroutines)
@@ -667,11 +667,11 @@ func TestLoadPrivateKey(t *testing.T) {
 			expectError: true,
 		},
 	}
-
+	
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			option, err := LoadPrivateKey(tt.b64PrivKey)
-
+			
 			if tt.expectError {
 				assert.Error(t, err)
 				assert.Nil(t, option)
@@ -711,11 +711,11 @@ func TestGeneratePrivateKey(t *testing.T) {
 			expectError: false,
 		},
 	}
-
+	
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			option, err := GeneratePrivateKey(tt.seed)
-
+			
 			if tt.expectError {
 				assert.Error(t, err)
 				assert.Nil(t, option)
@@ -731,14 +731,14 @@ func TestGeneratePrivateKey(t *testing.T) {
 func TestGeneratePrivateKeyUniqueness(t *testing.T) {
 	seeds := []int64{1, 2, 3, 4, 5}
 	options := make([]libp2p.Option, len(seeds))
-
+	
 	for i, seed := range seeds {
 		option, err := GeneratePrivateKey(seed)
 		assert.NoError(t, err)
 		assert.NotNil(t, option)
 		options[i] = option
 	}
-
+	
 	// All options should be different (we can't easily compare the actual keys,
 	// but we can verify they were created successfully)
 	for i := 0; i < len(options); i++ {
