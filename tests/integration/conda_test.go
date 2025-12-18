@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"stellar/core/conda"
 	"stellar/core/protocols/compute"
 	"stellar/p2p/node"
+	"stellar/p2p/protocols/compute/service/conda"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

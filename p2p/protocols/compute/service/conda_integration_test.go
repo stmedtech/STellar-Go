@@ -97,23 +97,19 @@ func TestComputeServer_RawCommandStillWorks(t *testing.T) {
 	assert.Equal(t, 0, <-h.ExitCode)
 }
 
-// TestComputeServer_CondaCommandWorks tests that commands with CONDA_ENV use conda
+// TestComputeServer_CondaCommandWorks tests that __conda commands work
+// CondaExecutor removed - use __conda run instead of CONDA_ENV
 func TestComputeServer_CondaCommandWorks(t *testing.T) {
 	requireNonWindows(t)
 
-	// Try to find conda path
-	condaPath := "conda" // Default to conda in PATH
-	// In a real scenario, we'd use core/conda.FindCondaPath(), but for tests we'll use a simple approach
+	p := startComputePair(t)
 
-	p := startComputePairWithConda(t, condaPath)
-
-	// Test with CONDA_ENV set - this should wrap the command with conda run
+	// Test with __conda run command instead of CONDA_ENV
 	// Note: This test may skip if conda is not available
 	h, err := p.client.Run(context.Background(), RunRequest{
 		RunID:   "conda-command-test",
-		Command: "python",
-		Args:    []string{"-c", "import sys; print(sys.executable)"},
-		Env:     map[string]string{"CONDA_ENV": "base"},
+		Command: "__conda",
+		Args:    []string{"run", "python", "-c", "import sys; print(sys.executable)"},
 	})
 	if err != nil {
 		// If conda is not available, skip the test

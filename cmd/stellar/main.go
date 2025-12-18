@@ -8,11 +8,11 @@ import (
 	golog "github.com/ipfs/go-log/v2"
 )
 
+var logger = golog.Logger("stellar-cli")
+
 const help = `Stellar cli`
 
 func main() {
-	var logger = golog.Logger("stellar")
-
 	golog.SetLogLevelRegex("stellar.*", "info")
 
 	// golog.SetAllLoggers(golog.LevelInfo)
@@ -38,8 +38,6 @@ func main() {
 		guiCommand()
 	case "conda":
 		condaCommand()
-	case "test":
-		testCommand()
 	default:
 		os.Exit(1)
 	}

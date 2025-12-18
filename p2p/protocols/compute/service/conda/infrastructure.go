@@ -12,10 +12,8 @@ import (
 
 // FindCondaPath finds the conda executable path
 // It searches in the following order:
-// 1. Windows: C:\ProgramData\miniconda3\Scripts\conda.exe
-// 2. Windows: C:\ProgramData\miniconda3\_conda.exe
-// 3. Local install directory (from CondaDownloadPath)
-// 4. System PATH
+// 1. Local install directory (from CondaDownloadPath using constant.StellarPath())
+// 2. System PATH
 func FindCondaPath() (string, error) {
 	// Helper function to check if command exists
 	cmdExists := func(cmd string) bool {
@@ -23,25 +21,29 @@ func FindCondaPath() (string, error) {
 		return err == nil
 	}
 
-	if runtime.GOOS == "windows" {
-		if condaPath := "C:\\ProgramData\\miniconda3\\Scripts\\conda.exe"; cmdExists(condaPath) {
-			return condaPath, nil
-		}
-		if condaPath := "C:\\ProgramData\\miniconda3\\_conda.exe"; cmdExists(condaPath) {
-			return condaPath, nil
+	// First, check local install directory (using constant.StellarPath())
+	if condaDir, fileErr := GetCondaDownloadPath(); fileErr == nil {
+		// Check for conda in local install
+		if runtime.GOOS == "windows" {
+			if condaPath := filepath.Join(condaDir, "Scripts", "conda.exe"); cmdExists(condaPath) {
+				return condaPath, nil
+			}
+			if condaPath := filepath.Join(condaDir, "_conda.exe"); cmdExists(condaPath) {
+				return condaPath, nil
+			}
+		} else {
+			if condaPath := filepath.Join(condaDir, "bin", "conda"); cmdExists(condaPath) {
+				return condaPath, nil
+			}
+			if condaPath := filepath.Join(condaDir, "_conda"); cmdExists(condaPath) {
+				return filepath.Join(condaDir, "bin", "conda"), nil
+			}
 		}
 	}
 
-	if condaDir, fileErr := GetCondaDownloadPath(); fileErr != nil {
-		return "", fileErr
-	} else {
-		if condaPath := filepath.Join(condaDir, "_conda"); cmdExists(condaPath) {
-			return filepath.Join(condaDir, "bin", "conda"), nil
-		}
-
-		if condaPath := "conda"; cmdExists(condaPath) {
-			return condaPath, nil
-		}
+	// Fall back to system PATH
+	if condaPath := "conda"; cmdExists(condaPath) {
+		return condaPath, nil
 	}
 
 	return "", fmt.Errorf("conda executable not found")

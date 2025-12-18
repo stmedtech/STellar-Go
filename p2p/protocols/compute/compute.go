@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	"stellar/core/conda"
 	"stellar/p2p/constant"
 	"stellar/p2p/node"
 	"stellar/p2p/protocols/compute/service"
@@ -21,18 +20,8 @@ var logger = golog.Logger("stellar-p2p-protocols-compute")
 func computeStreamHandler(s network.Stream) {
 	defer s.Close()
 
-	// Create base executor
-	baseExecutor := service.NewRawExecutor()
-
-	// Try to find conda path and wrap with CondaExecutor
-	// If conda is not found, we fall back to RawExecutor only
-	var executor service.Executor = baseExecutor
-	if condaPath, err := conda.FindCondaPath(); err == nil && condaPath != "" {
-		executor = service.NewCondaExecutor(baseExecutor, condaPath)
-		logger.Debugf("Using CondaExecutor with conda path: %s", condaPath)
-	} else {
-		logger.Debug("Conda not found, using RawExecutor only")
-	}
+	// Create executor (no CondaExecutor wrapper needed - use __conda commands instead)
+	executor := service.NewRawExecutor()
 
 	srv := service.NewServer(s, executor)
 	if srv == nil {

@@ -45,5 +45,5 @@ ENV IN_DOCKER=true
 ENV CONDATEST_ENABLED=true
 
 # Default command: run conda tests with longer timeout for slow operations
-CMD ["go", "test", "./core/conda/...", "-v", "-timeout", "10m"]
+CMD ["go", "test", "./p2p/protocols/compute/...", "-v", "-timeout", "10m"]
 

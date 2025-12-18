@@ -2,109 +2,115 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"io"
 	"os"
 	"strings"
 	"sync"
-	"time"
 
-	"stellar/core/conda"
 	"stellar/p2p/protocols/compute/service"
+	"stellar/p2p/protocols/compute/service/conda"
 )
 
 func condaCommand() {
 	if len(os.Args) < 3 {
-		printCondaUsage()
+		// Create handler to get usage (handler is single source of truth)
+		ops, _ := conda.NewCondaOperations("")
+		handler := conda.NewCondaHandler(ops)
+		fmt.Fprint(os.Stderr, handler.PrintUsage())
 		os.Exit(1)
 	}
 
 	subcommand := os.Args[2]
+	args := os.Args[3:]
+
+	// Use handler (single source of truth) for all commands
+	ctx := context.Background()
+
+	// Get conda operations (allow install-conda to work without conda)
+	ops, err := conda.NewCondaOperations("")
+	if err != nil && subcommand != "install-conda" {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Hint: Install conda or set PATH to include conda\n")
+		os.Exit(1)
+	}
+
+	// For install-conda, create operations without conda path
+	if err != nil && subcommand == "install-conda" {
+		ops, err = conda.NewCondaOperations("")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
+	// Create handler (single source of truth for command handling)
+	handler := conda.NewCondaHandler(ops)
+
+	// Parse flags for commands that need them
+	var showProgress bool = true
+	var stdin io.Reader = nil
 
 	switch subcommand {
-	case "install-conda":
-		condaInstallCondaCommand()
-	case "path":
-		condaPathCommand()
-	case "version":
-		condaVersionCommand()
-	case "list":
-		condaListCommand()
-	case "create":
-		condaCreateCommand()
-	case "remove":
-		condaRemoveCommand()
-	case "update":
-		condaUpdateCommand()
-	case "install":
-		condaInstallCommand()
-	case "get":
-		condaGetCommand()
-	default:
-		fmt.Fprintf(os.Stderr, "Unknown subcommand: %s\n", subcommand)
-		printCondaUsage()
+	case "create", "remove", "update", "install", "install-conda":
+		// These commands support --quiet flag
+		showProgress = !hasFlag(args, "quiet")
+		args = removeFlag(args, "quiet")
+	}
+
+	// Handle subcommand using handler (single source of truth)
+	execution, err := handler.HandleSubcommand(ctx, subcommand, args, stdin)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		if subcommand == "install-conda" {
+			fmt.Fprintf(os.Stderr, "Hint: This command installs conda, so it should work even if conda is not found\n")
+		}
+		os.Exit(1)
+	}
+
+	// Stream output
+	if err := streamCommandExecution(execution, showProgress); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func printCondaUsage() {
-	fmt.Fprintf(os.Stderr, `Usage: stellar conda <subcommand> [options]
-
-Conda Installation & Setup:
-  install-conda [version] Download and install conda (default: py313)
-  path                    Show conda executable path
-  version                 Show conda version
-
-Environment Management:
-  list                    List all conda environments
-  create <name>           Create a new conda environment
-  remove <name>           Remove a conda environment
-  update <name> <yaml>    Update environment from YAML file
-  install <env> <pkg>     Install a package in an environment
-  get <name>              Get the path of an environment
-
-Examples:
-  stellar conda install-conda py313
-  stellar conda path
-  stellar conda version
-  stellar conda list
-  stellar conda create --python 3.13 myenv
-  stellar conda remove myenv
-  stellar conda update myenv environment.yml
-  stellar conda install myenv numpy
-  stellar conda get myenv
-`)
-}
-
-func getCondaManager() (*conda.CondaManager, error) {
-	// Find conda path
-	condaPath, err := conda.FindCondaPath()
-	if err != nil {
-		return nil, fmt.Errorf("conda not found: %w\nHint: Install conda or set PATH to include conda", err)
+// hasFlag checks if a flag exists in args
+func hasFlag(args []string, flag string) bool {
+	for _, arg := range args {
+		if arg == "--"+flag || arg == "-"+flag {
+			return true
+		}
 	}
-
-	// Create RawExecutor for local operations
-	executor := service.NewRawExecutor()
-
-	// Create CondaManager
-	manager := conda.NewCondaManager(executor, condaPath)
-
-	return manager, nil
+	return false
 }
 
-func streamExecution(exec *service.RawExecution, showProgress bool) error {
+// removeFlag removes a flag and its value from args
+func removeFlag(args []string, flag string) []string {
+	result := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--"+flag || args[i] == "-"+flag {
+			// Skip flag (and its value if present)
+			continue
+		}
+		result = append(result, args[i])
+	}
+	return result
+}
+
+// streamCommandExecution streams an ExecutionStreamReader to stdout/stderr
+func streamCommandExecution(exec service.ExecutionStreamReader, showProgress bool) error {
 	if !showProgress {
 		// Just wait for completion without streaming
-		<-exec.Done
-		exitCode := <-exec.ExitCode
+		<-exec.GetDone()
+		exitCode := <-exec.GetExitCode()
 		if exitCode != 0 {
 			return fmt.Errorf("command exited with code %d", exitCode)
 		}
 		return nil
 	}
 
-	// Stream stdout and stderr in real-time
+	// Stream stdout and stderr in real-time (raw redirection, no transformation)
 	var wg sync.WaitGroup
 	var stdoutErr, stderrErr error
 
@@ -112,19 +118,19 @@ func streamExecution(exec *service.RawExecution, showProgress bool) error {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_, stdoutErr = io.Copy(os.Stdout, exec.Stdout)
+		_, stdoutErr = io.Copy(os.Stdout, exec.GetStdout())
 	}()
 
 	// Stream stderr
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_, stderrErr = io.Copy(os.Stderr, exec.Stderr)
+		_, stderrErr = io.Copy(os.Stderr, exec.GetStderr())
 	}()
 
 	// Wait for completion
-	doneErr := <-exec.Done
-	exitCode := <-exec.ExitCode
+	doneErr := <-exec.GetDone()
+	exitCode := <-exec.GetExitCode()
 
 	// Wait for streams to finish
 	wg.Wait()
@@ -156,383 +162,4 @@ func streamExecution(exec *service.RawExecution, showProgress bool) error {
 	}
 
 	return nil
-}
-
-func condaListCommand() {
-	manager, err := getCondaManager()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-
-	ctx := context.Background()
-	envs, err := manager.ListEnvironments(ctx)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error listing environments: %v\n", err)
-		os.Exit(1)
-	}
-
-	if len(envs) == 0 {
-		fmt.Println("No conda environments found (excluding base)")
-		return
-	}
-
-	fmt.Println("Conda environments:")
-	for name, path := range envs {
-		fmt.Printf("  %s\t%s\n", name, path)
-	}
-}
-
-func condaCreateCommand() {
-	createCmd := flag.NewFlagSet("create", flag.ExitOnError)
-	pythonVersion := createCmd.String("python", "3.13", "Python version (e.g., 3.13, 3.14)")
-	quiet := createCmd.Bool("quiet", false, "Suppress progress output")
-	createCmd.Parse(os.Args[3:])
-
-	if createCmd.NArg() < 1 {
-		fmt.Fprintf(os.Stderr, "Error: environment name required\n")
-		fmt.Fprintf(os.Stderr, "Usage: stellar conda create <name> [--python <version>] [--quiet]\n")
-		os.Exit(1)
-	}
-
-	envName := createCmd.Args()[0]
-
-	manager, err := getCondaManager()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
-
-	// Check if environment already exists
-	existingPath, err := manager.GetEnvironment(ctx, envName)
-	if err == nil {
-		if !*quiet {
-			fmt.Printf("Environment '%s' already exists at: %s\n", envName, existingPath)
-		} else {
-			fmt.Println(existingPath)
-		}
-		return
-	}
-
-	if !*quiet {
-		fmt.Printf("Creating conda environment '%s' with Python %s...\n", envName, *pythonVersion)
-	}
-
-	// For create, stream manually for real-time output
-	condaPath, err := conda.FindCondaPath()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-
-	executor := service.NewRawExecutor()
-	exec, err := executor.ExecuteRaw(ctx, service.RawExecutionRequest{
-		Command: condaPath,
-		Args:    []string{"create", "--name", envName, fmt.Sprintf("python=%s", *pythonVersion), "-y"},
-	})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-
-	if err := streamExecution(exec, !*quiet); err != nil {
-		fmt.Fprintf(os.Stderr, "\nError creating environment: %v\n", err)
-		os.Exit(1)
-	}
-
-	// Get the environment path after creation
-	path, err := manager.GetEnvironment(ctx, envName)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: Environment created but path not found: %v\n", err)
-		os.Exit(1)
-	}
-
-	if !*quiet {
-		fmt.Printf("Environment created successfully at: %s\n", path)
-	} else {
-		fmt.Println(path)
-	}
-}
-
-func condaRemoveCommand() {
-	removeCmd := flag.NewFlagSet("remove", flag.ExitOnError)
-	quiet := removeCmd.Bool("quiet", false, "Suppress progress output")
-	removeCmd.Parse(os.Args[3:])
-
-	if removeCmd.NArg() < 1 {
-		fmt.Fprintf(os.Stderr, "Error: environment name required\n")
-		fmt.Fprintf(os.Stderr, "Usage: stellar conda remove <name> [--quiet]\n")
-		os.Exit(1)
-	}
-
-	envName := removeCmd.Args()[0]
-
-	manager, err := getCondaManager()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-
-	// Check if environment exists first
-	_, err = manager.GetEnvironment(ctx, envName)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: environment '%s' not found\n", envName)
-		os.Exit(1)
-	}
-
-	if !*quiet {
-		fmt.Printf("Removing conda environment '%s'...\n", envName)
-	}
-
-	// For remove, we need to stream the output manually since CondaManager doesn't expose streaming
-	// We'll use the executor directly for streaming
-	condaPath, err := conda.FindCondaPath()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-
-	executor := service.NewRawExecutor()
-	exec, err := executor.ExecuteRaw(ctx, service.RawExecutionRequest{
-		Command: condaPath,
-		Args:    []string{"env", "remove", "--name", envName, "-y"},
-	})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-
-	if err := streamExecution(exec, !*quiet); err != nil {
-		fmt.Fprintf(os.Stderr, "\nError removing environment: %v\n", err)
-		os.Exit(1)
-	}
-
-	if !*quiet {
-		fmt.Printf("Environment '%s' removed successfully\n", envName)
-	}
-}
-
-func condaUpdateCommand() {
-	updateCmd := flag.NewFlagSet("update", flag.ExitOnError)
-	quiet := updateCmd.Bool("quiet", false, "Suppress progress output")
-	updateCmd.Parse(os.Args[3:])
-
-	if updateCmd.NArg() < 2 {
-		fmt.Fprintf(os.Stderr, "Error: environment name and YAML file required\n")
-		fmt.Fprintf(os.Stderr, "Usage: stellar conda update <name> <yaml-file> [--quiet]\n")
-		os.Exit(1)
-	}
-
-	envName := updateCmd.Args()[0]
-	yamlPath := updateCmd.Args()[1]
-
-	manager, err := getCondaManager()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
-
-	// Check if environment exists first
-	_, err = manager.GetEnvironment(ctx, envName)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: environment '%s' not found\n", envName)
-		os.Exit(1)
-	}
-
-	if !*quiet {
-		fmt.Printf("Updating conda environment '%s' from '%s'...\n", envName, yamlPath)
-	}
-
-	// For update, stream manually
-	condaPath, err := conda.FindCondaPath()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-
-	executor := service.NewRawExecutor()
-	exec, err := executor.ExecuteRaw(ctx, service.RawExecutionRequest{
-		Command: condaPath,
-		Args:    []string{"env", "update", "--name", envName, "--file", yamlPath},
-	})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-
-	if err := streamExecution(exec, !*quiet); err != nil {
-		fmt.Fprintf(os.Stderr, "\nError updating environment: %v\n", err)
-		os.Exit(1)
-	}
-
-	if !*quiet {
-		fmt.Printf("Environment '%s' updated successfully\n", envName)
-	}
-}
-
-func condaInstallCommand() {
-	installCmd := flag.NewFlagSet("install", flag.ExitOnError)
-	quiet := installCmd.Bool("quiet", false, "Suppress progress output")
-	installCmd.Parse(os.Args[3:])
-
-	if installCmd.NArg() < 2 {
-		fmt.Fprintf(os.Stderr, "Error: environment name and package name required\n")
-		fmt.Fprintf(os.Stderr, "Usage: stellar conda install <env> <package> [--quiet]\n")
-		os.Exit(1)
-	}
-
-	envName := installCmd.Args()[0]
-	packageName := installCmd.Args()[1]
-
-	manager, err := getCondaManager()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
-
-	// Check if environment exists first
-	_, err = manager.GetEnvironment(ctx, envName)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: environment '%s' not found\n", envName)
-		os.Exit(1)
-	}
-
-	if !*quiet {
-		fmt.Printf("Installing package '%s' in environment '%s'...\n", packageName, envName)
-	}
-
-	// For install, stream manually
-	condaPath, err := conda.FindCondaPath()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-
-	executor := service.NewRawExecutor()
-	exec, err := executor.ExecuteRaw(ctx, service.RawExecutionRequest{
-		Command: condaPath,
-		Args:    []string{"run", "--name", envName, "pip", "install", packageName},
-	})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-
-	if err := streamExecution(exec, !*quiet); err != nil {
-		// Check if it's "already satisfied" which is actually success
-		if strings.Contains(err.Error(), "already satisfied") {
-			if !*quiet {
-				fmt.Printf("Package '%s' is already installed in environment '%s'\n", packageName, envName)
-			}
-			return
-		}
-		fmt.Fprintf(os.Stderr, "\nError installing package: %v\n", err)
-		os.Exit(1)
-	}
-
-	if !*quiet {
-		fmt.Printf("Package '%s' installed successfully in environment '%s'\n", packageName, envName)
-	}
-}
-
-func condaGetCommand() {
-	getCmd := flag.NewFlagSet("get", flag.ExitOnError)
-	getCmd.Parse(os.Args[3:])
-
-	if getCmd.NArg() < 1 {
-		fmt.Fprintf(os.Stderr, "Error: environment name required\n")
-		fmt.Fprintf(os.Stderr, "Usage: stellar conda get <name>\n")
-		os.Exit(1)
-	}
-
-	envName := getCmd.Args()[0]
-
-	manager, err := getCondaManager()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-
-	ctx := context.Background()
-	path, err := manager.GetEnvironment(ctx, envName)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-
-	fmt.Println(path)
-}
-
-func condaInstallCondaCommand() {
-	installCmd := flag.NewFlagSet("install-conda", flag.ExitOnError)
-	quiet := installCmd.Bool("quiet", false, "Suppress progress output")
-	installCmd.Parse(os.Args[3:])
-
-	version := "py313"
-	if installCmd.NArg() > 0 {
-		version = installCmd.Args()[0]
-	}
-
-	if !*quiet {
-		fmt.Printf("Installing conda (version: %s)...\n", version)
-	}
-
-	err := conda.Install(version)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error installing conda: %v\n", err)
-		os.Exit(1)
-	}
-
-	if !*quiet {
-		fmt.Println("Conda installed successfully")
-		// Show the path
-		path, pathErr := conda.CommandPath()
-		if pathErr == nil {
-			fmt.Printf("Conda path: %s\n", path)
-		}
-	}
-}
-
-func condaPathCommand() {
-	pathCmd := flag.NewFlagSet("path", flag.ExitOnError)
-	pathCmd.Parse(os.Args[3:])
-
-	path, err := conda.CommandPath()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-
-	fmt.Println(path)
-}
-
-func condaVersionCommand() {
-	versionCmd := flag.NewFlagSet("version", flag.ExitOnError)
-	versionCmd.Parse(os.Args[3:])
-
-	condaPath, err := conda.FindCondaPath()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: conda not found: %v\n", err)
-		os.Exit(1)
-	}
-
-	version, err := conda.GetCondaVersion(condaPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error getting conda version: %v\n", err)
-		os.Exit(1)
-	}
-
-	fmt.Println(version)
 }

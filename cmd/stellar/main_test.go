@@ -183,7 +183,6 @@ func TestCommandFunctions(t *testing.T) {
 		{"bootstrapperCommand", bootstrapperCommand},
 		{"nodeCommand", nodeCommand},
 		{"guiCommand", guiCommand},
-		{"testCommand", testCommand},
 	}
 
 	for _, tt := range tests {
