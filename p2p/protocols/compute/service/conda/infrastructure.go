@@ -50,8 +50,6 @@ func FindCondaPath() (string, error) {
 }
 
 // GetCondaVersion gets the conda version by running conda --version
-// NOTE: This function uses exec.Command directly. It will be refactored in Phase 3
-// to use the Executor interface for better testability.
 func GetCondaVersion(condaPath string) (string, error) {
 	err := fmt.Errorf("version not supported")
 

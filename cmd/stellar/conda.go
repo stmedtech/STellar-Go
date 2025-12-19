@@ -8,8 +8,8 @@ import (
 	"strings"
 	"sync"
 
-	"stellar/p2p/protocols/compute/service"
 	"stellar/p2p/protocols/compute/service/conda"
+	"stellar/p2p/protocols/compute/streams"
 )
 
 func condaCommand() {
@@ -99,7 +99,7 @@ func removeFlag(args []string, flag string) []string {
 }
 
 // streamCommandExecution streams an ExecutionStreamReader to stdout/stderr
-func streamCommandExecution(exec service.ExecutionStreamReader, showProgress bool) error {
+func streamCommandExecution(exec streams.ExecutionStreamReader, showProgress bool) error {
 	if !showProgress {
 		// Just wait for completion without streaming
 		<-exec.GetDone()

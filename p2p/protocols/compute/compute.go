@@ -20,7 +20,7 @@ var logger = golog.Logger("stellar-p2p-protocols-compute")
 func computeStreamHandler(s network.Stream) {
 	defer s.Close()
 
-	// Create executor (no CondaExecutor wrapper needed - use __conda commands instead)
+	// Create executor for raw command execution
 	executor := service.NewRawExecutor()
 
 	srv := service.NewServer(s, executor)

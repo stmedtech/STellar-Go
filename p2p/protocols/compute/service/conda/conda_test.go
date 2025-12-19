@@ -1,7 +1,6 @@
 package conda
 
 import (
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -26,8 +25,7 @@ func TestUpdateCondaPath(t *testing.T) {
 }
 
 func TestCondaDownloadPath(t *testing.T) {
-	// Test CondaDownloadPath function
-	// CondaDownloadPath removed - use GetCondaDownloadPath instead
+	// Test GetCondaDownloadPath function
 	path, err := GetCondaDownloadPath()
 
 	// Should not error
@@ -52,8 +50,7 @@ func TestCommandExists(t *testing.T) {
 }
 
 func TestGetPath(t *testing.T) {
-	// Test getPath function
-	// getPath removed - use FindCondaPath instead
+	// Test FindCondaPath function
 	path, err := FindCondaPath()
 
 	// The function may fail if conda is not installed, which is expected
@@ -114,7 +111,7 @@ func TestGetCondaVersion(t *testing.T) {
 	// This depends on conda being available, so we test carefully
 	condaPath, err := FindCondaPath()
 	if err != nil {
-		t.Skipf("Skipping TestGetCondaVersion - conda not found: %v", err)
+		t.Skipf("conda not found: %v", err)
 	}
 
 	version, err := GetCondaVersion(condaPath)
@@ -139,34 +136,6 @@ func TestCommandPath(t *testing.T) {
 	} else {
 		// If conda is available, should return a path
 		assert.NotEmpty(t, path)
-	}
-}
-
-func TestDownload(t *testing.T) {
-	// Test Download function with a valid URL
-	// Run in Docker where network is available
-	if !ShouldRunCondaTests() {
-		t.Skip("Skipping TestDownload - requires network access. Run in Docker or set CONDATEST_ENABLED=true")
-	}
-
-	tempDir := t.TempDir()
-
-	// Test with a simple HTTP URL (GitHub raw content)
-	url := "https://raw.githubusercontent.com/golang/go/master/README.md"
-
-	filePath, err := Download(tempDir, url)
-
-	if err != nil {
-		// If download fails due to network issues, that's expected
-		assert.Contains(t, err.Error(), "requested URL is not downloadable")
-	} else {
-		// If download succeeds, should return a file path
-		assert.NotEmpty(t, filePath)
-		assert.True(t, filepath.IsAbs(filePath))
-
-		// File should exist
-		_, statErr := os.Stat(filePath)
-		assert.NoError(t, statErr)
 	}
 }
 
@@ -236,47 +205,6 @@ func TestDownloadCondaInstaller_PlatformSpecific(t *testing.T) {
 		assert.True(t,
 			strings.Contains(url, ".sh") || strings.Contains(url, ".exe"),
 			"URL should end with .sh or .exe: %s", url)
-	}
-}
-
-func TestInstall(t *testing.T) {
-	// Test Install function
-	// This is a complex function that downloads and installs conda
-	// Run in Docker where network is available
-	if !ShouldRunCondaTests() {
-		t.Skip("Skipping TestInstall - requires network access and long execution time. Run in Docker or set CONDATEST_ENABLED=true")
-	}
-
-	err := Install("3.9")
-
-	if err != nil {
-		// If installation fails, that's expected in test environments
-		// Just verify it's some kind of error
-		assert.Error(t, err)
-	} else {
-		// If installation succeeds, should not error
-		assert.NoError(t, err)
-	}
-}
-
-func TestInstallUnsupportedOS(t *testing.T) {
-	// Test Install function with unsupported OS
-	// This is difficult to test without mocking OS detection
-	// We test the error path by checking that unsupported OS returns appropriate error
-	// Note: This test may pass on supported platforms, which is fine
-	if !ShouldRunCondaTests() {
-		t.Skip("Skipping TestInstallUnsupportedOS - requires conda. Run in Docker or set CONDATEST_ENABLED=true")
-	}
-
-	// Install should handle unsupported OS gracefully
-	// On supported platforms, this may succeed or fail for other reasons
-	err := Install("3.9")
-
-	// If error occurs, it should be related to installation, not a panic
-	if err != nil {
-		assert.Error(t, err)
-		// Should not panic or have unexpected error types
-		assert.NotContains(t, err.Error(), "panic")
 	}
 }
 

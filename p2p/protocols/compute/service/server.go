@@ -10,6 +10,7 @@ import (
 
 	"stellar/p2p/protocols/common/protocol"
 	base_service "stellar/p2p/protocols/common/service"
+	"stellar/p2p/protocols/compute/streams"
 )
 
 // RunStatus represents the status of a command execution
@@ -199,22 +200,22 @@ func (s *Server) handleRun(ctx context.Context, packet *protocol.HandshakePacket
 
 	stdoutStream, err := s.Multiplexer().OpenStreamWithID(stdoutID)
 	if err != nil {
-		stdinStream.Close()
+		_ = s.Multiplexer().CloseStream(stdinID)
 		return s.sendRunError(req.RunID, fmt.Sprintf("failed to open stdout stream: %v", err))
 	}
 
 	stderrStream, err := s.Multiplexer().OpenStreamWithID(stderrID)
 	if err != nil {
-		stdinStream.Close()
-		stdoutStream.Close()
+		_ = s.Multiplexer().CloseStream(stdinID)
+		_ = s.Multiplexer().CloseStream(stdoutID)
 		return s.sendRunError(req.RunID, fmt.Sprintf("failed to open stderr stream: %v", err))
 	}
 
 	logStream, err := s.Multiplexer().OpenStreamWithID(logID)
 	if err != nil {
-		stdinStream.Close()
-		stdoutStream.Close()
-		stderrStream.Close()
+		_ = s.Multiplexer().CloseStream(stdinID)
+		_ = s.Multiplexer().CloseStream(stdoutID)
+		_ = s.Multiplexer().CloseStream(stderrID)
 		return s.sendRunError(req.RunID, fmt.Sprintf("failed to open log stream: %v", err))
 	}
 
@@ -238,10 +239,10 @@ func (s *Server) handleRun(ctx context.Context, packet *protocol.HandshakePacket
 	execCtx, cancel := context.WithCancel(ctx)
 	execution, err := s.executor.ExecuteRaw(execCtx, execReq)
 	if err != nil {
-		stdinStream.Close()
-		stdoutStream.Close()
-		stderrStream.Close()
-		logStream.Close()
+		_ = s.Multiplexer().CloseStream(stdinID)
+		_ = s.Multiplexer().CloseStream(stdoutID)
+		_ = s.Multiplexer().CloseStream(stderrID)
+		_ = s.Multiplexer().CloseStream(logID)
 		return s.sendRunError(req.RunID, fmt.Sprintf("failed to execute command: %v", err))
 	}
 
@@ -318,8 +319,15 @@ func (s *Server) handleCancel(packet *protocol.HandshakePacket) error {
 		return s.sendCancelError(req.RunID, fmt.Sprintf("run is not running (status: %s)", status))
 	}
 
-	// Cancel execution
-	runInfo.CancelFunc()
+	// Cancel execution if CancelFunc is available
+	runInfo.mu.Lock()
+	cancelFunc := runInfo.CancelFunc
+	runInfo.mu.Unlock()
+
+	if cancelFunc != nil {
+		cancelFunc()
+	}
+
 	runInfo.mu.Lock()
 	runInfo.Status = RunStatusCanceled
 	now := time.Now()
@@ -361,15 +369,7 @@ func (s *Server) handleStatus(packet *protocol.HandshakePacket) error {
 	return s.sendStatusSuccess(req.RunID, status, exitCode, startTime, endTime)
 }
 
-// ExecutionStreamReader is a unified interface for reading from execution streams
-// Works with both RawExecution (fields) and CommandExecution (methods)
-// Exported so it can be used by conda package
-type ExecutionStreamReader interface {
-	GetStdout() io.ReadCloser
-	GetStderr() io.ReadCloser
-	GetDone() <-chan error
-	GetExitCode() <-chan int
-}
+// ExecutionStreamReader interface moved to streams.go to avoid import cycles
 
 // RawExecution adapter methods (for unified interface)
 // Exported to satisfy ExecutionStreamReader interface
@@ -380,7 +380,7 @@ func (e *RawExecution) GetExitCode() <-chan int  { return e.ExitCode }
 
 // forwardStdout forwards stdout from execution to stream and logs
 // Works with both RawExecution and CommandExecution via unified interface
-func (s *Server) forwardStdout(execution ExecutionStreamReader, stream io.WriteCloser, logStream io.WriteCloser, runID string) {
+func (s *Server) forwardStdout(execution streams.ExecutionStreamReader, stream io.WriteCloser, logStream io.WriteCloser, runID string) {
 	defer stream.Close()
 
 	buf := make([]byte, 4096)
@@ -412,7 +412,7 @@ func (s *Server) forwardStdout(execution ExecutionStreamReader, stream io.WriteC
 
 // forwardStderr forwards stderr from execution to stream and logs
 // Works with both RawExecution and CommandExecution via unified interface
-func (s *Server) forwardStderr(execution ExecutionStreamReader, stream io.WriteCloser, logStream io.WriteCloser, runID string) {
+func (s *Server) forwardStderr(execution streams.ExecutionStreamReader, stream io.WriteCloser, logStream io.WriteCloser, runID string) {
 	defer stream.Close()
 
 	buf := make([]byte, 4096)
@@ -445,7 +445,8 @@ func (s *Server) forwardStderr(execution ExecutionStreamReader, stream io.WriteC
 // bridgeCondaExecution bridges a conda CommandExecution to multiplexer streams
 // This is a DRY helper that handles all conda operation streaming uniformly
 // No content transformation - pure raw redirection
-func (s *Server) bridgeCondaExecution(execution ExecutionStreamReader, stdoutStream, stderrStream, logStream io.WriteCloser, runID string, runInfo *RunInfo) {
+// forwardingWg is used to track when forwarding goroutines complete
+func (s *Server) bridgeCondaExecution(execution streams.ExecutionStreamReader, stdoutStream, stderrStream, logStream io.WriteCloser, runID string, runInfo *RunInfo, forwardingWg *sync.WaitGroup) {
 	// Convert CommandExecution to RawExecution for monitoring
 	cmdExec, ok := execution.(interface {
 		GetRunID() string
@@ -455,6 +456,7 @@ func (s *Server) bridgeCondaExecution(execution ExecutionStreamReader, stdoutStr
 		GetCancel() context.CancelFunc
 	})
 	if ok {
+		cancelFunc := cmdExec.GetCancel()
 		// Store execution in run info for monitoring
 		runInfo.Execution = &RawExecution{
 			RunID:    runID,
@@ -463,28 +465,31 @@ func (s *Server) bridgeCondaExecution(execution ExecutionStreamReader, stdoutStr
 			Stderr:   execution.GetStderr(),
 			Done:     cmdExec.GetDone(),
 			ExitCode: cmdExec.GetExitCode(),
-			Cancel:   cmdExec.GetCancel(),
+			Cancel:   cancelFunc,
 		}
-		// Monitor execution completion
+		// Set CancelFunc in runInfo for cancellation support
+		runInfo.mu.Lock()
+		runInfo.CancelFunc = cancelFunc
+		runInfo.mu.Unlock()
+		// Start monitoring execution completion
+		// Note: For createStringOutputExecution, channels are already closed with values.
+		// handleCondaOperation reads from channels BEFORE calling bridgeCondaExecution,
+		// so it should get the values first. monitorExecution will read zero values, but
+		// handleCondaOperation's status update will overwrite monitorExecution's update.
 		go s.monitorExecution(runID, runInfo.Execution)
 	}
 
 	// Bridge stdout/stderr to multiplexer streams and log (reuse proven forwardStdout/forwardStderr)
-	var ioWg sync.WaitGroup
-	ioWg.Add(2)
+	forwardingWg.Add(2)
 	go func() {
-		defer ioWg.Done()
+		defer forwardingWg.Done()
 		s.forwardStdout(execution, stdoutStream, logStream, runID)
 	}()
 	go func() {
-		defer ioWg.Done()
+		defer forwardingWg.Done()
 		s.forwardStderr(execution, stderrStream, logStream, runID)
 	}()
-	// Close log stream once stdout/stderr forwarding is done
-	go func() {
-		ioWg.Wait()
-		_ = logStream.Close()
-	}()
+	// Note: logStream will be closed by the caller after forwardingWg completes
 }
 
 // monitorExecution monitors execution completion and updates run info
@@ -508,6 +513,10 @@ func (s *Server) monitorExecution(runID string, execution *RawExecution) {
 	}
 
 	runInfo.mu.Lock()
+	// Only update status if still running (handleCondaOperation may have already updated it)
+	// This prevents race conditions where both handleCondaOperation and monitorExecution
+	// try to update the status, especially for createStringOutputExecution where channels
+	// are already closed and both might read from them
 	if runInfo.Status == RunStatusRunning {
 		if exitCode != nil && *exitCode == 0 {
 			runInfo.Status = RunStatusCompleted
@@ -526,71 +535,9 @@ func (s *Server) monitorExecution(runID string, execution *RawExecution) {
 	runInfo.mu.Unlock()
 
 	// Best-effort: emit a terminal status event (unmatched packets are delivered to eventsHandler on client side).
+	// Note: handleCondaOperation also sends status events, so this may be redundant,
+	// but it ensures status is sent even if handleCondaOperation hasn't run yet
 	_ = s.sendStatusSuccess(runID, status, code, startTime, endTime)
-}
-
-// forwardPythonStdout forwards stdout from PythonExecution to stream and logs
-func (s *Server) forwardPythonStdout(pythonExec interface {
-	Stdout() io.ReadCloser
-}, stream io.WriteCloser, logStream io.WriteCloser, runID string) {
-	defer stream.Close()
-
-	buf := make([]byte, 4096)
-	stdout := pythonExec.Stdout()
-	for {
-		n, err := stdout.Read(buf)
-		if n > 0 {
-			// Write to stdout stream
-			if _, writeErr := stream.Write(buf[:n]); writeErr != nil {
-				// Stream closed, stop forwarding
-				return
-			}
-
-			// Log to log stream
-			s.writeLogEntry(logStream, runID, "stdout", string(buf[:n]))
-		}
-		if err != nil {
-			if err == io.EOF {
-				// Normal end of stream
-				return
-			}
-			// Log error
-			s.writeLogEntry(logStream, runID, "error", fmt.Sprintf("stdout read error: %v", err))
-			return
-		}
-	}
-}
-
-// forwardPythonStderr forwards stderr from PythonExecution to stream and logs
-func (s *Server) forwardPythonStderr(pythonExec interface {
-	Stderr() io.ReadCloser
-}, stream io.WriteCloser, logStream io.WriteCloser, runID string) {
-	defer stream.Close()
-
-	buf := make([]byte, 4096)
-	stderr := pythonExec.Stderr()
-	for {
-		n, err := stderr.Read(buf)
-		if n > 0 {
-			// Write to stderr stream
-			if _, writeErr := stream.Write(buf[:n]); writeErr != nil {
-				// Stream closed, stop forwarding
-				return
-			}
-
-			// Log to log stream
-			s.writeLogEntry(logStream, runID, "stderr", string(buf[:n]))
-		}
-		if err != nil {
-			if err == io.EOF {
-				// Normal end of stream
-				return
-			}
-			// Log error
-			s.writeLogEntry(logStream, runID, "error", fmt.Sprintf("stderr read error: %v", err))
-			return
-		}
-	}
 }
 
 // writeLogEntry writes a log entry to the log stream
@@ -619,7 +566,6 @@ func (s *Server) cleanupRun(runID string) {
 }
 
 // Response helpers
-
 func (s *Server) sendRunSuccess(runID string, stdinID, stdoutID, stderrID, logID uint32) error {
 	packet, err := protocol.NewComputeRunResponsePacket(runID, true, stdinID, stdoutID, stderrID, logID, "")
 	if err != nil {
@@ -682,47 +628,45 @@ func (s *Server) sendStatusSuccess(runID string, status RunStatus, exitCode *int
 // Format: __conda <subcommand> [args...]
 // Uses shared CondaHandler for unified command handling
 func (s *Server) handleCondaOperation(ctx context.Context, req protocol.ComputeRunRequest, stdinID, stdoutID, stderrID, logID uint32, stdinStream, stdoutStream, stderrStream, logStream io.ReadWriteCloser) error {
+	// Helper function to close streams and send error
+	closeStreamsAndSendError := func(errMsg string) error {
+		// Close streams and remove from multiplexer map to prevent "stream already exists" errors
+		_ = s.Multiplexer().CloseStream(stdinID)
+		_ = s.Multiplexer().CloseStream(stdoutID)
+		_ = s.Multiplexer().CloseStream(stderrID)
+		_ = s.Multiplexer().CloseStream(logID)
+		return s.sendRunError(req.RunID, errMsg)
+	}
+
 	if len(req.Args) == 0 {
-		return s.sendRunError(req.RunID, "__conda requires a subcommand")
+		return closeStreamsAndSendError("__conda requires a subcommand")
 	}
 
 	subcommand := req.Args[0]
 	args := req.Args[1:]
 
-	// Create conda operations instance using creator to avoid import cycle
+	// Create conda operations using creator pattern
+	// The creator is automatically registered by conda package's init() when conda is imported
+	// When running the full test suite, conda package is imported, so init() runs and registers creator
 	creator := GetCondaOperationsCreator()
 	if creator == nil {
-		return s.sendRunError(req.RunID, "conda operations creator not registered")
+		return closeStreamsAndSendError("conda operations not available: conda package not imported")
 	}
 
 	opsInterface, err := creator("")
 	if err != nil {
-		return s.sendRunError(req.RunID, fmt.Sprintf("failed to initialize conda operations: %v", err))
+		return closeStreamsAndSendError(fmt.Sprintf("failed to initialize conda operations: %v", err))
 	}
 
-	// Type assert to get handler interface (avoids import cycle)
-	// The handler interface allows us to use HandleSubcommand without importing conda package
+	// Type assert to get handler interface
 	handler, ok := opsInterface.(interface {
-		HandleSubcommand(ctx context.Context, subcommand string, args []string, stdin io.Reader) (ExecutionStreamReader, error)
+		HandleSubcommand(ctx context.Context, subcommand string, args []string, stdin io.Reader) (streams.ExecutionStreamReader, error)
 	})
 	if !ok {
-		// Create handler wrapper using operations interface
-		ops, ok := opsInterface.(interface {
-			ListEnvironments(ctx context.Context) (ExecutionStreamReader, error)
-			GetEnvironment(ctx context.Context, name string) (string, error)
-			CreateEnvironment(ctx context.Context, name, pythonVersion string) (ExecutionStreamReader, error)
-			RemoveEnvironment(ctx context.Context, name string) (ExecutionStreamReader, error)
-			UpdateEnvironment(ctx context.Context, name, yamlPath string) (ExecutionStreamReader, error)
-			InstallPackage(ctx context.Context, envName, packageName string) (ExecutionStreamReader, error)
-			CommandPath(ctx context.Context) (string, error)
-			GetCondaVersion(ctx context.Context) (ExecutionStreamReader, error)
-			Install(ctx context.Context, pythonVersion string) (ExecutionStreamReader, error)
-			RunPython(ctx context.Context, env, code string, stdin io.Reader) (ExecutionStreamReader, error)
-			RunScript(ctx context.Context, env, scriptPath string, args []string, stdin io.Reader) (ExecutionStreamReader, error)
-			RunConda(ctx context.Context, args []string, stdin io.Reader) (ExecutionStreamReader, error)
-		})
+		// Fallback: use wrapper if direct handler not available
+		ops, ok := opsInterface.(CondaOperations)
 		if !ok {
-			return s.sendRunError(req.RunID, "invalid conda operations type")
+			return closeStreamsAndSendError("invalid conda operations type")
 		}
 		handler = &condaHandlerWrapper{ops: ops}
 	}
@@ -741,50 +685,85 @@ func (s *Server) handleCondaOperation(ctx context.Context, req protocol.ComputeR
 	// Handle subcommand using shared handler
 	var resultErr error
 	var exitCode int
+	forwardingWg := &sync.WaitGroup{}
 
 	go func() {
-		defer func() {
-			now := time.Now()
-			runInfo.mu.Lock()
-			runInfo.EndTime = &now
-			if resultErr == nil && exitCode == 0 {
-				runInfo.Status = RunStatusCompleted
-			} else {
-				runInfo.Status = RunStatusFailed
-			}
-			runInfo.ExitCode = &exitCode
-			runInfo.mu.Unlock()
-
-			// Send status update
-			_ = s.sendStatusSuccess(req.RunID, runInfo.Status, &exitCode, runInfo.StartTime, runInfo.EndTime)
-
-			// Close streams
-			stdinStream.Close()
-			stdoutStream.Close()
-			stderrStream.Close()
-			logStream.Close()
-		}()
-
 		// Use shared handler to execute subcommand
 		execution, err := handler.HandleSubcommand(ctx, subcommand, args, stdinStream)
 		if err != nil {
 			resultErr = err
 			exitCode = 1
 			fmt.Fprintf(stderrStream, "Error: %v\n", err)
+			// Close streams on error and remove from multiplexer map
+			_ = s.Multiplexer().CloseStream(stdinID)
+			_ = s.Multiplexer().CloseStream(stdoutID)
+			_ = s.Multiplexer().CloseStream(stderrID)
+			_ = s.Multiplexer().CloseStream(logID)
+
+			now := time.Now()
+			runInfo.mu.Lock()
+			runInfo.EndTime = &now
+			runInfo.Status = RunStatusFailed
+			runInfo.ExitCode = &exitCode
+			runInfo.mu.Unlock()
+			_ = s.sendStatusSuccess(req.RunID, RunStatusFailed, &exitCode, runInfo.StartTime, &now)
 			return
 		}
 
 		// Bridge execution streams to multiplexer (raw streaming, no transformation)
-		s.bridgeCondaExecution(execution, stdoutStream, stderrStream, logStream, req.RunID, runInfo)
+		// This also sets up CancelFunc in runInfo if execution supports cancellation
+		// bridgeCondaExecution starts forwarding goroutines and returns immediately
+		s.bridgeCondaExecution(execution, stdoutStream, stderrStream, logStream, req.RunID, runInfo, forwardingWg)
 
-		// Wait for completion
+		// Wait for completion - read from channels AFTER starting bridgeCondaExecution
+		// This ensures monitorExecution has a chance to start, but we read the values here
+		// For createStringOutputExecution, channels are already closed with values, so we get them immediately
 		doneErr := <-execution.GetDone()
 		if code, ok := <-execution.GetExitCode(); ok {
 			exitCode = code
+		} else {
+			// Channel closed without value - for createStringOutputExecution, this shouldn't happen
+			// because we send 0 before closing. But if it does, exitCode remains 0 (initialized)
 		}
 		if doneErr != nil {
 			resultErr = doneErr
 		}
+
+		// Wait for forwarding to complete before closing streams
+		// This ensures all data is forwarded, especially for stringOutputExecution
+		forwardingWg.Wait()
+
+		// Now safe to close streams and update status
+		// This is the authoritative status update - monitorExecution may have already
+		// tried to update status, but we overwrite it here with the correct values
+		now := time.Now()
+		runInfo.mu.Lock()
+		runInfo.EndTime = &now
+		// Debug: check what values we have
+		// For createStringOutputExecution, doneErr should be nil and exitCode should be 0
+		if resultErr == nil && exitCode == 0 {
+			runInfo.Status = RunStatusCompleted
+		} else {
+			// If we're here, either resultErr is not nil or exitCode is not 0
+			// For createStringOutputExecution, this shouldn't happen unless channels were read incorrectly
+			runInfo.Status = RunStatusFailed
+		}
+		runInfo.ExitCode = &exitCode
+		// Snapshot for event emission
+		status := runInfo.Status
+		startTime := runInfo.StartTime
+		endTime := runInfo.EndTime
+		code := runInfo.ExitCode
+		runInfo.mu.Unlock()
+
+		// Send authoritative status update (overwrites any status from monitorExecution)
+		_ = s.sendStatusSuccess(req.RunID, status, code, startTime, endTime)
+
+		// Close streams after forwarding is complete and remove from multiplexer map
+		_ = s.Multiplexer().CloseStream(stdinID)
+		_ = s.Multiplexer().CloseStream(stdoutID)
+		_ = s.Multiplexer().CloseStream(stderrID)
+		_ = s.Multiplexer().CloseStream(logID)
 	}()
 
 	// Send success response immediately (execution happens in goroutine)

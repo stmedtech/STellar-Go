@@ -37,13 +37,10 @@ WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy source code
-COPY . .
-
 # Set environment variable to indicate we're in Docker
 ENV IN_DOCKER=true
 ENV CONDATEST_ENABLED=true
 
-# Default command: run conda tests with longer timeout for slow operations
-CMD ["go", "test", "./p2p/protocols/compute/...", "-v", "-timeout", "10m"]
+# Default command: run conda tests with timeout to prevent hanging
+CMD ["go", "test", "-tags", "conda", "./p2p/protocols/compute/...", "-v", "-timeout", "2m"]
 

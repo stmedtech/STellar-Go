@@ -130,7 +130,7 @@ func (sr *streamReader) Read(p []byte) (n int, err error) {
 	select {
 	case data, ok := <-sr.dataChan:
 		if !ok || len(data) == 0 {
-		return 0, io.EOF
+			return 0, io.EOF
 		}
 		n = copy(p, data)
 		if n < len(data) {
@@ -366,16 +366,21 @@ func (m *Multiplexer) newStream(id uint32) *Stream {
 }
 
 // CloseStream closes a stream
+// To avoid deadlock, we close the stream first (which may need to write),
+// then remove it from the map
 func (m *Multiplexer) CloseStream(id uint32) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	stream, ok := m.streams[id]
 	if !ok {
+		m.mu.Unlock()
 		return ErrStreamNotFound
 	}
-
+	// Remove from map before closing to prevent reuse
 	delete(m.streams, id)
+	m.mu.Unlock()
+
+	// Close stream without holding the lock to avoid deadlock
+	// stream.Close() may call writeData() which needs RLock
 	return stream.Close()
 }
 

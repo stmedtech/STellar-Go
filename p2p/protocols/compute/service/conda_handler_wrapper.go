@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"stellar/p2p/protocols/compute/streams"
 	"strings"
 )
 
@@ -12,24 +13,24 @@ import (
 // Used when CondaHandler is not directly available (type assertion fails)
 type condaHandlerWrapper struct {
 	ops interface {
-		ListEnvironments(ctx context.Context) (ExecutionStreamReader, error)
+		ListEnvironments(ctx context.Context) (streams.ExecutionStreamReader, error)
 		GetEnvironment(ctx context.Context, name string) (string, error)
-		CreateEnvironment(ctx context.Context, name, pythonVersion string) (ExecutionStreamReader, error)
-		RemoveEnvironment(ctx context.Context, name string) (ExecutionStreamReader, error)
-		UpdateEnvironment(ctx context.Context, name, yamlPath string) (ExecutionStreamReader, error)
-		InstallPackage(ctx context.Context, envName, packageName string) (ExecutionStreamReader, error)
+		CreateEnvironment(ctx context.Context, name, pythonVersion string) (streams.ExecutionStreamReader, error)
+		RemoveEnvironment(ctx context.Context, name string) (streams.ExecutionStreamReader, error)
+		UpdateEnvironment(ctx context.Context, name, yamlPath string) (streams.ExecutionStreamReader, error)
+		InstallPackage(ctx context.Context, envName, packageName string) (streams.ExecutionStreamReader, error)
 		CommandPath(ctx context.Context) (string, error)
-		GetCondaVersion(ctx context.Context) (ExecutionStreamReader, error)
-		Install(ctx context.Context, pythonVersion string) (ExecutionStreamReader, error)
-		RunPython(ctx context.Context, env, code string, stdin io.Reader) (ExecutionStreamReader, error)
-		RunScript(ctx context.Context, env, scriptPath string, args []string, stdin io.Reader) (ExecutionStreamReader, error)
-		RunConda(ctx context.Context, args []string, stdin io.Reader) (ExecutionStreamReader, error)
+		GetCondaVersion(ctx context.Context) (streams.ExecutionStreamReader, error)
+		Install(ctx context.Context, pythonVersion string) (streams.ExecutionStreamReader, error)
+		RunPython(ctx context.Context, env, code string, stdin io.Reader) (streams.ExecutionStreamReader, error)
+		RunScript(ctx context.Context, env, scriptPath string, args []string, stdin io.Reader) (streams.ExecutionStreamReader, error)
+		RunConda(ctx context.Context, args []string, stdin io.Reader) (streams.ExecutionStreamReader, error)
 	}
 }
 
 // HandleSubcommand handles a conda subcommand
 // Implements the same interface as conda.CondaHandler for server-side use
-func (w *condaHandlerWrapper) HandleSubcommand(ctx context.Context, subcommand string, args []string, stdin io.Reader) (ExecutionStreamReader, error) {
+func (w *condaHandlerWrapper) HandleSubcommand(ctx context.Context, subcommand string, args []string, stdin io.Reader) (streams.ExecutionStreamReader, error) {
 	switch subcommand {
 	case "list":
 		return w.ops.ListEnvironments(ctx)
@@ -50,7 +51,7 @@ func (w *condaHandlerWrapper) HandleSubcommand(ctx context.Context, subcommand s
 			return nil, fmt.Errorf("environment name required")
 		}
 		envName := args[0]
-		pythonVersion := "3.13" // default
+		pythonVersion := "3.9" // default - use stable version that's widely available
 		// Parse --python flag if present
 		for i, arg := range args {
 			if arg == "--python" && i+1 < len(args) {
@@ -123,13 +124,16 @@ func (w *condaHandlerWrapper) HandleSubcommand(ctx context.Context, subcommand s
 }
 
 // createStringOutputExecution creates an execution that outputs a string
-func (w *condaHandlerWrapper) createStringOutputExecution(output string) ExecutionStreamReader {
+// Note: Channels are kept open (not closed) so multiple readers can get the values
+// This prevents race conditions where monitorExecution and handleCondaOperation
+// both try to read from the same channels
+func (w *condaHandlerWrapper) createStringOutputExecution(output string) streams.ExecutionStreamReader {
 	done := make(chan error, 1)
 	exitCode := make(chan int, 1)
 	done <- nil
 	exitCode <- 0
-	close(done)
-	close(exitCode)
+	// Don't close channels - keep them open so multiple readers can get the values
+	// The channels are buffered, so the values are available to all readers
 
 	return &stringOutputExecution{
 		output:   output + "\n",

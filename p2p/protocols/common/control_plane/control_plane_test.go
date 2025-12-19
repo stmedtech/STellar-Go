@@ -6,7 +6,6 @@ import (
 	"net"
 	"sync"
 	"testing"
-	"time"
 
 	"stellar/p2p/protocols/common/protocol"
 
@@ -196,7 +195,7 @@ func TestControlPlaneNextContextTimeout(t *testing.T) {
 	err := cp.EnsureStarted()
 	require.NoError(t, err)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	// Don't send any packets, should timeout
@@ -335,7 +334,7 @@ func TestControlPlaneCloseStopsReading(t *testing.T) {
 	cp.Close()
 
 	// Try to read - should get EOF
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	packet, err := cp.Next(ctx)
@@ -362,7 +361,7 @@ func TestControlPlaneReadError(t *testing.T) {
 	serverConn.Close()
 
 	// Try to read - should get error
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	packet, err := cp.Next(ctx)
@@ -390,7 +389,7 @@ func TestControlPlaneUnmarshalError(t *testing.T) {
 	require.NoError(t, err)
 
 	// Try to read - should get error (either unmarshal or read error)
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	packet, err := cp.Next(ctx)

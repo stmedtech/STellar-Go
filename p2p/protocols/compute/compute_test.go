@@ -5,7 +5,6 @@ import (
 	"io"
 	"runtime"
 	"testing"
-	"time"
 
 	"stellar/p2p/node"
 	"stellar/p2p/protocols/compute/service"
@@ -18,7 +17,7 @@ import (
 func TestBindComputeStream_DirectRunEcho(t *testing.T) {
 	// Use a bounded context for dialing/handshake, but do not tie execution lifetime to it.
 	// The compute client intentionally completes handles when the Run() ctx is canceled.
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	serverNode, err := node.NewNode("127.0.0.1", 0)
@@ -26,8 +25,6 @@ func TestBindComputeStream_DirectRunEcho(t *testing.T) {
 	defer serverNode.Close()
 
 	// Policy is enabled by default; allow the client node explicitly.
-	// (This test validates the Phase 6 binding under the real policy wrapper.)
-	// Note: clientNode isn't created yet; we will add after clientNode creation.
 
 	BindComputeStream(serverNode)
 

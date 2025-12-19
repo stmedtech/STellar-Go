@@ -12,6 +12,7 @@ import (
 	"slices"
 	"stellar/core/constant"
 	"stellar/core/device"
+	"stellar/core/utils"
 
 	// "stellar/core/device" // Temporarily unused (Phase 0 cleanup)
 	// "stellar/core/protocols/compute" // Temporarily disabled (Phase 0 cleanup)
@@ -481,16 +482,10 @@ func (app *GUIApp) openTerminalWindow(peerID peer.ID, deviceID string) {
 			return fmt.Errorf("not connected")
 		}
 
-		// Parse command line (simple space-separated, no quote handling for now)
-		fields := strings.Fields(cmdLine)
-		if len(fields) == 0 {
+		// Parse command line with proper quote and escape handling
+		cmd, args := utils.ParseCommandLine(cmdLine)
+		if cmd == "" {
 			return fmt.Errorf("empty command")
-		}
-
-		cmd := fields[0]
-		args := []string{}
-		if len(fields) > 1 {
-			args = fields[1:]
 		}
 
 		// Show command being executed

@@ -160,12 +160,15 @@ func (o *CondaOperations) executeCommand(ctx context.Context, command string, ar
 		Done:     done,
 		ExitCode: exitCode,
 		Cancel: func() {
+			// Cancel the context first (this will signal the process to stop via exec.CommandContext)
 			cancel()
-			// Kill the process if it's still running
+			// Kill the process if it's still running (force kill)
+			// This ensures the process is terminated even if context cancellation doesn't work
 			if cmd.Process != nil {
-				cmd.Process.Kill()
+				_ = cmd.Process.Kill()
 			}
-			// Ensure readers are unblocked
+			// Ensure readers are unblocked by closing pipe writers
+			// This is critical - if writers aren't closed, readers will hang forever
 			_ = stdoutW.Close()
 			_ = stderrW.Close()
 		},
@@ -339,9 +342,24 @@ func (o *CondaOperations) GetEnvironment(ctx context.Context, name string) (stri
 	bridge := NewStreamBridge(listExec)
 	stdoutDone, _ := bridge.BridgeTo(&stdoutBuf, io.Discard)
 
-	// Wait for completion
-	code, doneErr := bridge.Wait()
-	<-stdoutDone // Wait for stdout bridging to complete
+	// Wait for completion with timeout to prevent hanging
+	done := make(chan struct{})
+	var code int
+	var doneErr error
+	go func() {
+		code, doneErr = bridge.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Wait for stdout bridging to complete
+		<-stdoutDone
+	case <-ctx.Done():
+		return "", fmt.Errorf("context cancelled while getting environment: %w", ctx.Err())
+	case <-time.After(30 * time.Second):
+		return "", fmt.Errorf("timeout waiting for conda env list to complete")
+	}
 
 	if doneErr != nil {
 		return "", fmt.Errorf("failed to execute conda env list: %w", doneErr)
@@ -350,18 +368,26 @@ func (o *CondaOperations) GetEnvironment(ctx context.Context, name string) (stri
 		return "", fmt.Errorf("conda env list exited with code %d", code)
 	}
 
-	// Parse output
-	envs, err := ParseEnvListOutput(stdoutBuf.String())
-	if err != nil {
-		return "", fmt.Errorf("failed to parse env list output: %w", err)
+	// Parse output directly (includes base environment)
+	output := stdoutBuf.String()
+	lines := strings.Split(output, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.Fields(line)
+		if len(parts) < 2 {
+			continue
+		}
+		envName := strings.TrimPrefix(parts[0], "*")
+		envPath := parts[len(parts)-1]
+		if envName == name {
+			return envPath, nil
+		}
 	}
 
-	path, ok := envs[name]
-	if !ok {
-		return "", fmt.Errorf("environment not found: %s", name)
-	}
-
-	return path, nil
+	return "", fmt.Errorf("environment not found: %s", name)
 }
 
 // CreateEnvironment creates a new conda environment
@@ -381,14 +407,15 @@ func (o *CondaOperations) CreateEnvironment(ctx context.Context, name, pythonVer
 
 	// Check if environment already exists (non-blocking check)
 	if envPath, err := o.GetEnvironment(ctx, name); err == nil {
-		// Environment already exists, return a no-op execution
-		// For streaming compatibility, we create a dummy execution that immediately completes
+		// Environment already exists, return a no-op execution that immediately completes
+		// This maintains the CommandExecution interface contract for streaming
+		// Note: Channels are kept open (not closed) so multiple readers can get the values
+		// This prevents race conditions where multiple readers try to read from the same channels
 		done := make(chan error, 1)
 		exitCode := make(chan int, 1)
 		done <- nil
 		exitCode <- 0
-		close(done)
-		close(exitCode)
+		// Don't close channels - keep them open so multiple readers can get the values
 		return &CommandExecution{
 			RunID:    generateCommandRunID(),
 			Stdin:    nil,
@@ -503,9 +530,10 @@ func (o *CondaOperations) RunPython(ctx context.Context, env, code string, stdin
 		return nil, fmt.Errorf("environment not found: %s", env)
 	}
 
-	// Build command: conda run -n <env> python -c <code>
+	// Build command: conda run -n <env> --no-capture-output python -c <code>
+	// --no-capture-output ensures stdin/stdout/stderr are not captured by conda
 	// Use executeCommand (proven RawExecutor pattern)
-	return o.executeCommand(ctx, condaPath, []string{"run", "-n", env, "python", "-c", code}, stdin)
+	return o.executeCommand(ctx, condaPath, []string{"run", "-n", env, "--no-capture-output", "python", "-c", code}, stdin)
 }
 
 // RunScript executes a Python script in a conda environment with streaming I/O
@@ -529,10 +557,11 @@ func (o *CondaOperations) RunScript(ctx context.Context, env, scriptPath string,
 		return nil, fmt.Errorf("environment not found: %s", env)
 	}
 
-	// Build command: conda run -n <env> python <script> [args...]
+	// Build command: conda run -n <env> --no-capture-output python <script> [args...]
+	// --no-capture-output ensures stdin/stdout/stderr are not captured by conda
 	// Use executeCommand (proven RawExecutor pattern)
 	scriptArgs := append([]string{scriptPath}, args...)
-	return o.executeCommand(ctx, condaPath, append([]string{"run", "-n", env, "python"}, scriptArgs...), stdin)
+	return o.executeCommand(ctx, condaPath, append([]string{"run", "-n", env, "--no-capture-output", "python"}, scriptArgs...), stdin)
 }
 
 // RunConda executes a raw conda command with arbitrary arguments
@@ -582,7 +611,7 @@ func (e *CommandExecution) GetExitCode() <-chan int { return e.ExitCode }
 func (e *CommandExecution) GetCancel() context.CancelFunc { return e.Cancel }
 
 // ParseEnvListOutput parses conda env list output and returns a map of env names to paths
-// Excludes base environment
+// Includes all environments including base
 // This function handles the output format from "conda env list" command
 func ParseEnvListOutput(output string) (map[string]string, error) {
 	envs := make(map[string]string)
@@ -604,8 +633,9 @@ func ParseEnvListOutput(output string) (map[string]string, error) {
 		envName := strings.TrimPrefix(parts[0], "*")
 		envPath := parts[len(parts)-1]
 
-		// Skip base environment
-		if envName == "base" {
+		// Validate that envPath looks like a valid path (starts with / or contains path separators)
+		// This prevents parsing invalid output like "invalid output format" as an environment
+		if !strings.HasPrefix(envPath, "/") && !strings.Contains(envPath, string(filepath.Separator)) {
 			continue
 		}
 

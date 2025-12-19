@@ -6,18 +6,36 @@ import (
 	"io"
 	"strings"
 
-	"stellar/p2p/protocols/compute/service"
+	"stellar/p2p/protocols/compute/streams"
 )
+
+// condaOperationsInterface defines the interface for conda operations
+// This allows both CondaOperations and MockCondaOperations to be used
+// Note: Methods return *CommandExecution which implements streams.ExecutionStreamReader
+type condaOperationsInterface interface {
+	Install(ctx context.Context, pythonVersion string) (*CommandExecution, error)
+	CommandPath(ctx context.Context) (string, error)
+	GetCondaVersion(ctx context.Context) (*CommandExecution, error)
+	ListEnvironments(ctx context.Context) (*CommandExecution, error)
+	GetEnvironment(ctx context.Context, name string) (string, error)
+	CreateEnvironment(ctx context.Context, name, pythonVersion string) (*CommandExecution, error)
+	RemoveEnvironment(ctx context.Context, name string) (*CommandExecution, error)
+	UpdateEnvironment(ctx context.Context, name, yamlPath string) (*CommandExecution, error)
+	InstallPackage(ctx context.Context, envName, packageName string) (*CommandExecution, error)
+	RunPython(ctx context.Context, env, code string, stdin io.Reader) (*CommandExecution, error)
+	RunScript(ctx context.Context, env, scriptPath string, args []string, stdin io.Reader) (*CommandExecution, error)
+	RunConda(ctx context.Context, args []string, stdin io.Reader) (*CommandExecution, error)
+}
 
 // CondaHandler handles conda subcommands with streaming I/O
 // This is a shared handler used by both CLI and server-side execution
 // All operations return CommandExecution for raw streaming
 type CondaHandler struct {
-	ops *CondaOperations
+	ops condaOperationsInterface
 }
 
 // NewCondaHandler creates a new conda handler
-func NewCondaHandler(ops *CondaOperations) *CondaHandler {
+func NewCondaHandler(ops condaOperationsInterface) *CondaHandler {
 	return &CondaHandler{ops: ops}
 }
 
@@ -25,7 +43,7 @@ func NewCondaHandler(ops *CondaOperations) *CondaHandler {
 // Returns executionStreamReader for operations that execute commands
 // Returns error for validation errors
 // This is the single source of truth for conda command handling
-func (h *CondaHandler) HandleSubcommand(ctx context.Context, subcommand string, args []string, stdin io.Reader) (service.ExecutionStreamReader, error) {
+func (h *CondaHandler) HandleSubcommand(ctx context.Context, subcommand string, args []string, stdin io.Reader) (streams.ExecutionStreamReader, error) {
 	switch subcommand {
 	case "list":
 		return h.ops.ListEnvironments(ctx)
@@ -48,7 +66,7 @@ func (h *CondaHandler) HandleSubcommand(ctx context.Context, subcommand string, 
 			return nil, fmt.Errorf("environment name required")
 		}
 		envName := args[0]
-		pythonVersion := "3.13" // default
+		pythonVersion := "3.9" // default - use stable version that's widely available
 		// Parse --python flag if present
 		for i, arg := range args {
 			if arg == "--python" && i+1 < len(args) {
@@ -170,13 +188,17 @@ Examples:
 
 // createStringOutputExecution creates a CommandExecution that outputs a string
 // Used for operations that return simple values (get, path)
+// Note: Channels are kept open (not closed) so multiple readers can get the values
+// This prevents race conditions where monitorExecution and handleCondaOperation
+// both try to read from the same channels
 func (h *CondaHandler) createStringOutputExecution(output string) *CommandExecution {
 	done := make(chan error, 1)
 	exitCode := make(chan int, 1)
 	done <- nil
 	exitCode <- 0
-	close(done)
-	close(exitCode)
+	// Don't close channels - keep them open so multiple readers can get the values
+	// The channels are buffered, so the values are available to all readers
+	// We'll close them in a cleanup goroutine after a delay to prevent leaks
 
 	return &CommandExecution{
 		RunID:    generateCommandRunID(),

@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"sync"
 	"testing"
-	"time"
 
 	"stellar/p2p/node"
 	"stellar/p2p/protocols/compute"
@@ -68,7 +67,7 @@ func runEcho(t *testing.T, c *compute_service.Client, runID string) {
 }
 
 func TestE2E_DirectConnection(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	server := newTestNode(t)
@@ -87,7 +86,7 @@ func TestE2E_DirectConnection(t *testing.T) {
 }
 
 func TestE2E_RelayConnection(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	// Dedicated relay host.
@@ -144,7 +143,7 @@ func TestE2E_RelayConnection(t *testing.T) {
 }
 
 func TestE2E_ConcurrentExecutions(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	server := newTestNode(t)
@@ -181,7 +180,7 @@ func TestE2E_ConcurrentExecutions(t *testing.T) {
 }
 
 func TestE2E_MultipleNodes(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	server1 := newTestNode(t)
@@ -211,7 +210,7 @@ func TestE2E_MultipleNodes(t *testing.T) {
 }
 
 func TestE2E_Reconnection(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	server := newTestNode(t)

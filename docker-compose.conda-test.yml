@@ -11,7 +11,7 @@ services:
     environment:
       - IN_DOCKER=true
       - CONDATEST_ENABLED=true
-    command: go test ./p2p/protocols/compute/... -v -timeout 10m
+    command: go test -tags conda ./p2p/protocols/compute/... -v -timeout 10m -parallel 1
     # Override command with: docker-compose -f docker-compose.conda-test.yml run --rm conda-test <command>
 
 volumes:

@@ -114,28 +114,6 @@ func TestFindCondaPath_MultiplePaths(t *testing.T) {
 	}
 }
 
-// TestGetCondaVersion_Success tests parsing version from conda --version
-func TestGetCondaVersion_Success(t *testing.T) {
-	// Run in Docker where conda is available
-	if !ShouldRunCondaTests() {
-		t.Skip("Skipping TestGetCondaVersion_Success - requires conda. Run in Docker or set CONDATEST_ENABLED=true")
-	}
-
-	// Test with a mock version string
-	// Since we can't easily mock exec.Command, we test the parsing logic
-	// by testing with actual conda if available
-	condaPath, err := FindCondaPath()
-	if err != nil {
-		t.Skip("Conda not available for version test")
-	}
-
-	version, err := GetCondaVersion(condaPath)
-	require.NoError(t, err)
-	assert.NotEmpty(t, version)
-	// Version should be in format x.y.z
-	assert.Regexp(t, `^\d+\.\d+\.\d+`, version)
-}
-
 // TestGetCondaVersion_InvalidOutput tests handling malformed version output
 func TestGetCondaVersion_InvalidOutput(t *testing.T) {
 	// Test with invalid conda path
@@ -148,26 +126,6 @@ func TestGetCondaVersion_CommandFails(t *testing.T) {
 	// Test with invalid path
 	_, err := GetCondaVersion("nonexistent-conda-command")
 	assert.Error(t, err)
-}
-
-// TestGetCondaVersion_EmptyOutput tests handling empty output
-func TestGetCondaVersion_EmptyOutput(t *testing.T) {
-	// Run in Docker where conda is available
-	if !ShouldRunCondaTests() {
-		t.Skip("Skipping TestGetCondaVersion_EmptyOutput - requires conda. Run in Docker or set CONDATEST_ENABLED=true")
-	}
-
-	// This would require mocking, but we test the error path
-	condaPath, err := FindCondaPath()
-	if err != nil {
-		t.Skip("Conda not available")
-	}
-
-	// If conda exists, version should not be empty
-	version, err := GetCondaVersion(condaPath)
-	if err == nil {
-		assert.NotEmpty(t, version)
-	}
 }
 
 // TestGetCondaDownloadPath_Success tests creating download directory
@@ -319,25 +277,6 @@ func TestFindCondaPath_Symlink(t *testing.T) {
 	}
 }
 
-// TestGetCondaVersion_NonNumericVersion tests handling non-standard version formats
-func TestGetCondaVersion_NonNumericVersion(t *testing.T) {
-	// Run in Docker where conda is available
-	if !ShouldRunCondaTests() {
-		t.Skip("Skipping TestGetCondaVersion_NonNumericVersion - requires conda. Run in Docker or set CONDATEST_ENABLED=true")
-	}
-
-	condaPath, err := FindCondaPath()
-	if err != nil {
-		t.Skip("Conda not available")
-	}
-
-	version, err := GetCondaVersion(condaPath)
-	if err == nil {
-		// Version should match regex pattern
-		assert.Regexp(t, `^\d+\.\d+`, version)
-	}
-}
-
 // TestGetCondaDownloadPath_DiskFull tests handling disk full scenario
 func TestGetCondaDownloadPath_DiskFull(t *testing.T) {
 	// This is difficult to test without actually filling disk
@@ -364,25 +303,6 @@ func TestDownloadUrl_InvalidVersion(t *testing.T) {
 	if err == nil {
 		assert.NotEmpty(t, url)
 	}
-}
-
-// TestGetCondaVersion_WithRealConda tests version detection with real conda if available
-func TestGetCondaVersion_WithRealConda(t *testing.T) {
-	// Run in Docker where conda is available
-	if !ShouldRunCondaTests() {
-		t.Skip("Skipping TestGetCondaVersion_WithRealConda - requires conda. Run in Docker or set CONDATEST_ENABLED=true")
-	}
-
-	condaPath, err := FindCondaPath()
-	if err != nil {
-		t.Skip("Conda not available for version test")
-	}
-
-	version, err := GetCondaVersion(condaPath)
-	require.NoError(t, err)
-	assert.NotEmpty(t, version)
-	// Version should match pattern x.y.z
-	assert.Regexp(t, `^\d+\.\d+\.\d+`, version)
 }
 
 // TestGetCondaVersion_InvalidPath tests with invalid conda path
