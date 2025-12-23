@@ -1,8 +1,10 @@
 package socket
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -11,9 +13,13 @@ import (
 	p2p_constant "stellar/p2p/constant"
 	"stellar/p2p/node"
 	"stellar/p2p/policy"
+	"stellar/p2p/protocols/compute"
+	compute_service "stellar/p2p/protocols/compute/service"
 	"stellar/p2p/protocols/file"
 	"stellar/p2p/protocols/proxy"
 	"strconv"
+	"sync"
+	"time"
 
 	golog "github.com/ipfs/go-log/v2"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -28,6 +34,26 @@ type APIServer struct {
 	Node   *node.Node
 	Proxy  *proxy.ProxyManager
 	server *gin.Engine
+
+	// Compute operation tracking
+	computeRunsMu sync.RWMutex
+	computeRuns   map[string]*ComputeRun
+}
+
+// ComputeRun represents a compute operation
+type ComputeRun struct {
+	ID       string
+	DeviceID string
+	Command  string
+	Args     []string
+	Status   string // "running", "completed", "failed", "cancelled"
+	Created  time.Time
+	Started  *time.Time
+	Finished *time.Time
+	ExitCode *int
+	Error    error
+	handle   *compute_service.RawExecutionHandle
+	client   *compute_service.Client
 }
 
 func (s *APIServer) StartSocket() {
@@ -435,6 +461,13 @@ func (s *APIServer) CloseProxy(c *gin.Context) {
 func (s *APIServer) Start() {
 	server := gin.Default()
 
+	// Initialize compute runs map
+	s.computeRunsMu.Lock()
+	if s.computeRuns == nil {
+		s.computeRuns = make(map[string]*ComputeRun)
+	}
+	s.computeRunsMu.Unlock()
+
 	// Health and node endpoints
 	server.GET("/health", s.GetHealth)
 	server.GET("/node", s.GetNodeInfo)
@@ -455,12 +488,17 @@ func (s *APIServer) Start() {
 	server.POST("/devices/:deviceId/files/upload", s.UploadFile)
 
 	// Compute protocol endpoints
-	// Compute Protocol Endpoints - Temporarily disabled (Phase 0 cleanup)
-	// server.GET("/devices/:deviceId/compute/envs", s.ListCondaEnvs)
-	// server.POST("/devices/:deviceId/compute/prepare", s.PrepareCondaEnv)
-	// server.POST("/devices/:deviceId/compute/execute", s.ExecuteScript)
-	// server.POST("/devices/:deviceId/compute/execute-workspace", s.ExecuteWorkspace)
-	// server.POST("/devices/:deviceId/compute/cancel", s.CancelComputeRun)
+	server.POST("/devices/:deviceId/compute/run", s.RunCompute)
+	server.GET("/devices/:deviceId/compute", s.ListComputeRuns)
+	server.GET("/devices/:deviceId/compute/:runId", s.GetComputeRun)
+	server.POST("/devices/:deviceId/compute/:runId/cancel", s.CancelComputeRun)
+	server.DELETE("/devices/:deviceId/compute/:runId", s.DeleteComputeRun)
+
+	// Streaming endpoints
+	server.GET("/devices/:deviceId/compute/:runId/stdout", s.StreamStdout)
+	server.GET("/devices/:deviceId/compute/:runId/stderr", s.StreamStderr)
+	server.GET("/devices/:deviceId/compute/:runId/logs", s.StreamLogs)
+	server.POST("/devices/:deviceId/compute/:runId/stdin", s.SendStdin)
 
 	// Proxy protocol endpoints
 	server.POST("/proxy", s.CreateProxy)
@@ -480,4 +518,392 @@ func (s *APIServer) Start() {
 // GetRouter returns the gin.Engine router for testing purposes
 func (s *APIServer) GetRouter() *gin.Engine {
 	return s.server
+}
+
+// errorResponse is a DRY helper for error responses
+func (s *APIServer) errorResponse(c *gin.Context, statusCode int, message string, details interface{}) {
+	response := gin.H{"error": message}
+	if details != nil {
+		response["details"] = details
+	}
+	c.JSON(statusCode, response)
+}
+
+// validateDevice is a DRY helper for device validation
+func (s *APIServer) validateDevice(deviceID string) (node.Device, error) {
+	if deviceID == "" {
+		return node.Device{}, fmt.Errorf("device ID is required")
+	}
+	if s.Node == nil {
+		return node.Device{}, fmt.Errorf("node is not initialized")
+	}
+	return s.Node.GetDevice(deviceID)
+}
+
+// Compute Protocol Endpoints
+
+// RunCompute executes a command on a device
+func (s *APIServer) RunCompute(c *gin.Context) {
+	deviceID := c.Param("deviceId")
+
+	var req struct {
+		Command    string            `json:"command" binding:"required"`
+		Args       []string          `json:"args,omitempty"`
+		Env        map[string]string `json:"env,omitempty"`
+		WorkingDir string            `json:"working_dir,omitempty"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		s.errorResponse(c, http.StatusBadRequest, err.Error(), nil)
+		return
+	}
+
+	device, err := s.validateDevice(deviceID)
+	if err != nil {
+		s.errorResponse(c, http.StatusNotFound, fmt.Sprintf("Device not found: %s", deviceID), nil)
+		return
+	}
+
+	// Create compute client using existing p2p compute protocol
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	client, err := compute.DialComputeClient(ctx, s.Node, device.ID)
+	if err != nil {
+		logger.Warnf("Failed to dial compute client: %v", err)
+		s.errorResponse(c, http.StatusInternalServerError, "Failed to connect to device", err.Error())
+		return
+	}
+	// Note: Don't defer close - keep client alive for streaming
+
+	// Generate run ID
+	runID := fmt.Sprintf("run_%d", time.Now().UnixNano())
+
+	// Execute command using existing compute service
+	handle, err := client.Run(ctx, compute_service.RunRequest{
+		RunID:      runID,
+		Command:    req.Command,
+		Args:       req.Args,
+		Env:        req.Env,
+		WorkingDir: req.WorkingDir,
+	})
+	if err != nil {
+		client.Close()
+		logger.Warnf("Failed to run compute command: %v", err)
+		s.errorResponse(c, http.StatusInternalServerError, "Failed to execute command", err.Error())
+		return
+	}
+
+	// Store run
+	now := time.Now()
+	run := &ComputeRun{
+		ID:       runID,
+		DeviceID: deviceID,
+		Command:  req.Command,
+		Args:     req.Args,
+		Status:   "running",
+		Created:  now,
+		Started:  &now,
+		handle:   handle,
+		client:   client,
+	}
+
+	s.computeRunsMu.Lock()
+	if s.computeRuns == nil {
+		s.computeRuns = make(map[string]*ComputeRun)
+	}
+	s.computeRuns[runID] = run
+	s.computeRunsMu.Unlock()
+
+	// Monitor completion
+	go func() {
+		err := <-handle.Done
+		exitCode := <-handle.ExitCode
+
+		s.computeRunsMu.Lock()
+		run.Finished = new(time.Time)
+		*run.Finished = time.Now()
+		run.ExitCode = &exitCode
+		if err != nil {
+			run.Status = "failed"
+			run.Error = err
+		} else if exitCode == 0 {
+			run.Status = "completed"
+		} else {
+			run.Status = "failed"
+		}
+		s.computeRunsMu.Unlock()
+	}()
+
+	// Return response
+	c.JSON(http.StatusCreated, gin.H{
+		"id":      runID,
+		"status":  "running",
+		"created": run.Created.Format(time.RFC3339),
+		"streams": gin.H{
+			"stdout": fmt.Sprintf("/devices/%s/compute/%s/stdout", deviceID, runID),
+			"stderr": fmt.Sprintf("/devices/%s/compute/%s/stderr", deviceID, runID),
+			"logs":   fmt.Sprintf("/devices/%s/compute/%s/logs", deviceID, runID),
+		},
+	})
+}
+
+// ListComputeRuns lists compute operations for a device
+func (s *APIServer) ListComputeRuns(c *gin.Context) {
+	deviceID := c.Param("deviceId")
+
+	device, err := s.validateDevice(deviceID)
+	if err != nil {
+		s.errorResponse(c, http.StatusNotFound, fmt.Sprintf("Device not found: %s", deviceID), nil)
+		return
+	}
+	_ = device // Use device to ensure it exists
+
+	s.computeRunsMu.RLock()
+	runs := make([]gin.H, 0)
+	for _, run := range s.computeRuns {
+		if run.DeviceID == deviceID {
+			runData := gin.H{
+				"id":      run.ID,
+				"command": run.Command,
+				"status":  run.Status,
+				"created": run.Created.Format(time.RFC3339),
+			}
+			if run.ExitCode != nil {
+				runData["exit_code"] = *run.ExitCode
+			}
+			runs = append(runs, runData)
+		}
+	}
+	s.computeRunsMu.RUnlock()
+
+	c.JSON(http.StatusOK, runs)
+}
+
+// GetComputeRun gets compute operation details
+func (s *APIServer) GetComputeRun(c *gin.Context) {
+	deviceID := c.Param("deviceId")
+	runID := c.Param("runId")
+
+	s.computeRunsMu.RLock()
+	run, exists := s.computeRuns[runID]
+	s.computeRunsMu.RUnlock()
+
+	if !exists || run.DeviceID != deviceID {
+		s.errorResponse(c, http.StatusNotFound, "Run not found", nil)
+		return
+	}
+
+	runData := gin.H{
+		"id":      run.ID,
+		"command": run.Command,
+		"args":    run.Args,
+		"status":  run.Status,
+		"created": run.Created.Format(time.RFC3339),
+	}
+	if run.Started != nil {
+		runData["started"] = run.Started.Format(time.RFC3339)
+	}
+	if run.Finished != nil {
+		runData["finished"] = run.Finished.Format(time.RFC3339)
+	}
+	if run.ExitCode != nil {
+		runData["exit_code"] = *run.ExitCode
+	}
+	if run.Error != nil {
+		runData["error"] = run.Error.Error()
+	}
+
+	c.JSON(http.StatusOK, runData)
+}
+
+// CancelComputeRun cancels a running operation
+func (s *APIServer) CancelComputeRun(c *gin.Context) {
+	deviceID := c.Param("deviceId")
+	runID := c.Param("runId")
+
+	s.computeRunsMu.Lock()
+	run, exists := s.computeRuns[runID]
+	s.computeRunsMu.Unlock()
+
+	if !exists || run.DeviceID != deviceID {
+		s.errorResponse(c, http.StatusNotFound, "Run not found", nil)
+		return
+	}
+
+	if err := run.handle.Cancel(); err != nil {
+		s.errorResponse(c, http.StatusInternalServerError, "Failed to cancel", err.Error())
+		return
+	}
+
+	run.Status = "cancelled"
+	c.JSON(http.StatusOK, gin.H{"id": runID, "status": "cancelled"})
+}
+
+// DeleteComputeRun removes a compute operation record
+func (s *APIServer) DeleteComputeRun(c *gin.Context) {
+	deviceID := c.Param("deviceId")
+	runID := c.Param("runId")
+
+	s.computeRunsMu.Lock()
+	run, exists := s.computeRuns[runID]
+	if exists && run.DeviceID == deviceID {
+		delete(s.computeRuns, runID)
+		// Clean up resources
+		if run.client != nil {
+			run.client.Close()
+		}
+	}
+	s.computeRunsMu.Unlock()
+
+	if !exists || run.DeviceID != deviceID {
+		s.errorResponse(c, http.StatusNotFound, "Run not found", nil)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"id": runID, "status": "removed"})
+}
+
+// Streaming Endpoints
+
+// StreamStdout streams stdout from a compute operation
+func (s *APIServer) StreamStdout(c *gin.Context) {
+	deviceID := c.Param("deviceId")
+	runID := c.Param("runId")
+	follow := c.DefaultQuery("follow", "false") == "true"
+
+	s.computeRunsMu.RLock()
+	run, exists := s.computeRuns[runID]
+	s.computeRunsMu.RUnlock()
+
+	if !exists || run.DeviceID != deviceID {
+		s.errorResponse(c, http.StatusNotFound, "Run not found", nil)
+		return
+	}
+
+	c.Header("Content-Type", "text/plain")
+	if follow {
+		c.Header("Transfer-Encoding", "chunked")
+		flusher, ok := c.Writer.(http.Flusher)
+		if !ok {
+			s.errorResponse(c, http.StatusInternalServerError, "Streaming not supported", nil)
+			return
+		}
+		_, err := io.Copy(c.Writer, run.handle.Stdout)
+		if err != nil && err != io.EOF {
+			logger.Warnf("Error streaming stdout: %v", err)
+		}
+		flusher.Flush()
+	} else {
+		data, err := io.ReadAll(run.handle.Stdout)
+		if err != nil && err != io.EOF {
+			s.errorResponse(c, http.StatusInternalServerError, "Failed to read stdout", err.Error())
+			return
+		}
+		c.Data(http.StatusOK, "text/plain", data)
+	}
+}
+
+// StreamStderr streams stderr from a compute operation
+func (s *APIServer) StreamStderr(c *gin.Context) {
+	deviceID := c.Param("deviceId")
+	runID := c.Param("runId")
+	follow := c.DefaultQuery("follow", "false") == "true"
+
+	s.computeRunsMu.RLock()
+	run, exists := s.computeRuns[runID]
+	s.computeRunsMu.RUnlock()
+
+	if !exists || run.DeviceID != deviceID {
+		s.errorResponse(c, http.StatusNotFound, "Run not found", nil)
+		return
+	}
+
+	c.Header("Content-Type", "text/plain")
+	if follow {
+		c.Header("Transfer-Encoding", "chunked")
+		flusher, ok := c.Writer.(http.Flusher)
+		if !ok {
+			s.errorResponse(c, http.StatusInternalServerError, "Streaming not supported", nil)
+			return
+		}
+		_, err := io.Copy(c.Writer, run.handle.Stderr)
+		if err != nil && err != io.EOF {
+			logger.Warnf("Error streaming stderr: %v", err)
+		}
+		flusher.Flush()
+	} else {
+		data, err := io.ReadAll(run.handle.Stderr)
+		if err != nil && err != io.EOF {
+			s.errorResponse(c, http.StatusInternalServerError, "Failed to read stderr", err.Error())
+			return
+		}
+		c.Data(http.StatusOK, "text/plain", data)
+	}
+}
+
+// StreamLogs streams combined logs from a compute operation
+func (s *APIServer) StreamLogs(c *gin.Context) {
+	deviceID := c.Param("deviceId")
+	runID := c.Param("runId")
+	follow := c.DefaultQuery("follow", "false") == "true"
+
+	s.computeRunsMu.RLock()
+	run, exists := s.computeRuns[runID]
+	s.computeRunsMu.RUnlock()
+
+	if !exists || run.DeviceID != deviceID {
+		s.errorResponse(c, http.StatusNotFound, "Run not found", nil)
+		return
+	}
+
+	c.Header("Content-Type", "application/json")
+	if follow {
+		c.Header("Transfer-Encoding", "chunked")
+		flusher, ok := c.Writer.(http.Flusher)
+		if !ok {
+			s.errorResponse(c, http.StatusInternalServerError, "Streaming not supported", nil)
+			return
+		}
+		_, err := io.Copy(c.Writer, run.handle.Log)
+		if err != nil && err != io.EOF {
+			logger.Warnf("Error streaming logs: %v", err)
+		}
+		flusher.Flush()
+	} else {
+		data, err := io.ReadAll(run.handle.Log)
+		if err != nil && err != io.EOF {
+			s.errorResponse(c, http.StatusInternalServerError, "Failed to read logs", err.Error())
+			return
+		}
+		c.Data(http.StatusOK, "application/json", data)
+	}
+}
+
+// SendStdin sends input to a running compute operation
+func (s *APIServer) SendStdin(c *gin.Context) {
+	deviceID := c.Param("deviceId")
+	runID := c.Param("runId")
+
+	s.computeRunsMu.RLock()
+	run, exists := s.computeRuns[runID]
+	s.computeRunsMu.RUnlock()
+
+	if !exists || run.DeviceID != deviceID {
+		s.errorResponse(c, http.StatusNotFound, "Run not found", nil)
+		return
+	}
+
+	if run.handle.Stdin == nil {
+		s.errorResponse(c, http.StatusBadRequest, "Stdin not available for this run", nil)
+		return
+	}
+
+	bytesWritten, err := io.Copy(run.handle.Stdin, c.Request.Body)
+	if err != nil {
+		s.errorResponse(c, http.StatusInternalServerError, "Failed to write to stdin", err.Error())
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"bytes_written": bytesWritten})
 }
