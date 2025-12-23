@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	golog "github.com/ipfs/go-log/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -203,16 +202,6 @@ func TestHelpConstant(t *testing.T) {
 	// Test that the help constant is defined
 	assert.Equal(t, "Stellar cli", help)
 	assert.NotEmpty(t, help)
-}
-
-func TestLoggerSetup(t *testing.T) {
-	// Test that the logger setup doesn't panic
-	assert.NotPanics(t, func() {
-		// We can't easily test the actual logger setup without side effects
-		// but we can test that the code doesn't panic
-		var logger = golog.Logger("stellar")
-		require.NotNil(t, logger)
-	})
 }
 
 func TestFlagUsage(t *testing.T) {

@@ -4,13 +4,9 @@ import (
 	"flag"
 	"os"
 	"stellar/p2p/node"
-
-	golog "github.com/ipfs/go-log/v2"
 )
 
 func bootstrapperCommand() {
-	var logger = golog.Logger("stellar")
-
 	bootstrapperCmd := flag.NewFlagSet("bootstrapper", flag.ExitOnError)
 
 	// Connection
