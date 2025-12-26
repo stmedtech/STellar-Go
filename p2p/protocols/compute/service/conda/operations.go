@@ -268,7 +268,15 @@ func (o *CondaOperations) Install(ctx context.Context, pythonVersion string) (*C
 		installPath := filepath.Join(appDir, "conda")
 		return o.executeCommand(ctx, "/bin/sh", []string{filePath, "-b", "-f", "-p", installPath}, nil)
 	case "windows":
-		return o.executeCommand(ctx, filePath, []string{"/InstallationType=AllUsers", "/RegisterConda=0", "/S", "/D=" + filepath.Join(appDir, "conda")}, nil)
+		// Install Miniconda in headless mode for just this user on Windows
+		return o.executeCommand(ctx, filePath, []string{
+			"/InstallationType=JustMe",
+			"/AddToPath=0",
+			"/RegisterPython=0",
+			"/RegisterConda=0",
+			"/S",
+			"/D=" + filepath.Join(appDir, "conda"),
+		}, nil)
 	default:
 		return nil, fmt.Errorf("unsupported OS: %s", runtime.GOOS)
 	}
