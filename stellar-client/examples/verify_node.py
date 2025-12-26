@@ -21,13 +21,13 @@ def test_basic_connection():
         try:
             # with StellarClient(socket_path=socket_path) as client:
             with StellarClient() as client:
-                node_info = client.get_node_info()
+                node_info = client.info()
                 print(f"✅ Successfully connected!")
                 print(f"   Node ID: {node_info.id}")
                 print(f"   Node info: {node_info}")
                 
                 # Test device discovery
-                devices = client.list_devices()
+                devices = client.devices.list()
                 print(f"   Discovered devices: {len(devices)}")
                 
                 return True

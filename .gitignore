@@ -254,5 +254,3 @@ docker-compose.override.yml
 cache/
 data/
 fl/
-
-docker/

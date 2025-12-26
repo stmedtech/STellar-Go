@@ -1373,17 +1373,6 @@ func TestStreamLogs_NotFound(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
 
-// TestSendStdin_NotFound tests sending stdin to non-existent run
-func TestSendStdin_NotFound(t *testing.T) {
-	apiServer := setupTestAPIServerForCompute(t)
-
-	req := httptest.NewRequest("POST", "/devices/test-device/compute/nonexistent/stdin", bytes.NewBufferString("test"))
-	w := httptest.NewRecorder()
-
-	apiServer.server.ServeHTTP(w, req)
-	assert.Equal(t, http.StatusNotFound, w.Code)
-}
-
 // TestAPIServer_ComputeRunsInitialization tests that computeRuns map is initialized
 func TestAPIServer_ComputeRunsInitialization(t *testing.T) {
 	apiServer := &APIServer{}
@@ -1884,49 +1873,6 @@ func TestDeleteComputeRun_Integration_Cleanup(t *testing.T) {
 	require.Equal(t, http.StatusNotFound, w.Code)
 }
 
-// TestSendStdin_Integration tests sending stdin to a running operation
-func TestSendStdin_Integration(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-	if runtime.GOOS == "windows" {
-		t.Skip("Cat command test not reliable on Windows")
-	}
-
-	_, _, apiServer := setupIntegrationTestNodes(t)
-
-	devices := apiServer.Node.Devices()
-	require.NotEmpty(t, devices)
-	var deviceID string
-	for id := range devices {
-		deviceID = id
-		break
-	}
-
-	// Create a run that reads from stdin (cat command)
-	body := `{"command": "cat"}`
-	req := httptest.NewRequest("POST", fmt.Sprintf("/devices/%s/compute/run", deviceID), bytes.NewBufferString(body))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	apiServer.server.ServeHTTP(w, req)
-	require.Equal(t, http.StatusCreated, w.Code)
-
-	var resp map[string]interface{}
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	runID := resp["id"].(string)
-
-	// Send stdin
-	testInput := "test input\n"
-	req = httptest.NewRequest("POST", fmt.Sprintf("/devices/%s/compute/%s/stdin", deviceID, runID), bytes.NewBufferString(testInput))
-	w = httptest.NewRecorder()
-	apiServer.server.ServeHTTP(w, req)
-	require.Equal(t, http.StatusOK, w.Code)
-
-	var stdinResp map[string]interface{}
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &stdinResp))
-	assert.Greater(t, stdinResp["bytes_written"], float64(0))
-}
-
 // TestRunCompute_Integration_InvalidRunID tests operations with invalid run IDs
 func TestRunCompute_Integration_InvalidRunID(t *testing.T) {
 	_, _, apiServer := setupIntegrationTestNodes(t)
@@ -1952,7 +1898,6 @@ func TestRunCompute_Integration_InvalidRunID(t *testing.T) {
 		{"stream stdout invalid", "invalid-run-id", "/devices/%s/compute/%s/stdout", "GET"},
 		{"stream stderr invalid", "invalid-run-id", "/devices/%s/compute/%s/stderr", "GET"},
 		{"stream logs invalid", "invalid-run-id", "/devices/%s/compute/%s/logs", "GET"},
-		{"send stdin invalid", "invalid-run-id", "/devices/%s/compute/%s/stdin", "POST"},
 	}
 
 	for _, tt := range tests {

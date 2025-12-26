@@ -1,19 +1,19 @@
 # Stellar Client
 
-Python client library for Stellar (Decentralized Federated Learning) platform.
+Python client library for Stellar platform, designed with a docker-py-like interface.
 
 ## Overview
 
-The Stellar Client provides a comprehensive Python interface for interacting with Stellar nodes, enabling seamless integration of federated learning workflows with the decentralized P2P infrastructure.
+The Stellar Client provides a comprehensive Python interface for interacting with Stellar nodes, following the same patterns as [docker-py](https://docker-py.readthedocs.io/). The API is resource-based and object-oriented, making it intuitive and easy to use.
 
 ## Features
 
-- **Simple Synchronous API**: Easy-to-use synchronous client interface
-- **Complete Protocol Coverage**: Access to all Stellar protocols (Echo, File, Compute, Proxy)
-- **Robust Error Handling**: Built-in retry mechanisms and circuit breaker patterns
+- **docker-py-like API**: Familiar patterns for users of docker-py
+- **Resource-based Design**: Clean separation with `devices`, `compute`, `proxy`, `policy` managers
+- **Object-oriented**: Devices and compute runs are objects with methods
+- **Streaming Support**: Stream logs, stdout, and stderr from compute operations
 - **Type Safety**: Full type annotations and Pydantic models
-- **Multi-device Support**: Operations across multiple devices
-- **FL Integration**: High-level helpers for federated learning workflows
+- **Robust Error Handling**: Comprehensive exception hierarchy
 
 ## Installation
 
@@ -32,267 +32,312 @@ pip install -e .[dev]
 ## Quick Start
 
 ```python
-from stellar_client import StellarClient
+import stellar_client
 
-# Connect to Stellar node
-with StellarClient() as client:
-    # List discovered devices
-    devices = client.list_devices()
-    print(f"Found {len(devices)} devices")
+# Create client (like docker.from_env())
+client = stellar_client.from_env()
+
+# List devices (like client.containers.list())
+devices = client.devices.list()
+print(f"Found {len(devices)} devices")
+
+# Get a device (like client.containers.get())
+if devices:
+    device = client.devices.get(devices[0].id)
     
-    # Ping a device
-    if devices:
-        device_id = devices[0].id
-        ping_result = client.echo.ping(device_id)
-        print(f"Ping successful: {ping_result.success}")
-        
-    # Ping all devices
-    for device in devices:
-        result = client.echo.ping(device.id)
-        print(f"Device {device.id}: {result.success}")
-```
+    # Ping device
+    device.ping()
+    
+    # Get device info
+    info = device.info()
+    print(f"Device platform: {info.get('SysInfo', {}).get('Platform')}")
+    
+    # List files on device
+    files = device.files().list("/")
+    for file in files:
+        print(f"  {file.filename}")
 
-## Protocol Usage
-
-### Echo Protocol
-
-```python
-# Ping device
-ping_response = client.echo.ping(device_id)
-
-# Get detailed device information
-device_info = client.echo.get_device_info(device_id)
-```
-
-### File Protocol
-
-```python
-# List files on remote device
-files = client.file.list_files(device_id, path="/data")
-
-# Download file
-client.file.download_file(
-    device_id=device_id,
-    remote_path="/data/model.pt",
-    local_path="./local_model.pt",
-    progress_callback=lambda sent, total: print(f"Progress: {sent}/{total}")
+# Run compute operation (like client.containers.run())
+run = client.compute.run(
+    device_id=device.id,
+    command="echo",
+    args=["hello", "world"]
 )
 
-# Upload file
-client.file.upload_file(
-    device_id=device_id,
-    local_path="./script.py",
-    remote_path="/scripts/training.py"
-)
-```
+# Wait for completion
+run.wait()
 
-### Compute Protocol
+# Get logs (like container.logs())
+logs = run.logs()
+print(f"Output: {logs}")
 
-```python
-from stellar_client.models import CondaEnvConfig, ScriptConfig
-
-# Prepare Conda environment
-env_config = CondaEnvConfig(
-    env="fl_env",
-    version="3.9",
-    env_yaml_path="./environment.yml"
-)
-
-env_path = client.compute.prepare_environment(device_id, env_config)
-
-# Execute script
-script_config = ScriptConfig(
-    env="fl_env",
-    script_path="/scripts/training.py"
-)
-
-result = client.compute.execute_script(device_id, script_config)
-print(f"Execution result: {result.result}")
-```
-
-### Proxy Protocol
-
-```python
-# Create TCP proxy
-proxy_info = client.proxy.create_tcp_proxy(
-    device_id=device_id,
-    local_port=8080,
-    remote_host="internal-service",
-    remote_port=80
-)
-
-print(f"Proxy created on port {proxy_info.local_port}")
-
-# List active proxies
-proxies = client.proxy.list_proxies()
-
-# Close proxy
-client.proxy.close_proxy(8080)
-```
-
-## Federated Learning Integration
-
-### Basic FL Workflow
-
-```python
-from stellar_client.models import FLTaskConfig
-
-# Define FL task
-task_config = FLTaskConfig(
-    framework="flower",
-    client_script="./fl_client.py",
-    rounds=10,
-    clients_per_round=3
-)
-
-# Execute on multiple devices
-devices = client.list_devices()
-results = []
-
-for device in devices[:3]:  # Use first 3 devices
-    result = client.compute.execute_federated_task(device.id, task_config)
-    results.append(result)
-
-print(f"FL completed: {sum(1 for r in results if r.success)}/{len(results)} successful")
-```
-
-### Federated Learning Example
-
-```python
-def run_federated_learning():
-    with StellarClient() as client:
-        devices = client.list_devices()
-        
-        # Execute FL tasks on multiple devices
-        script_config = {"env": "fl_env", "script_path": "fl_client.py"}
-        results = {}
-        
-        for device in devices[:5]:  # Use first 5 devices
-            result = client.compute.execute_script(device.id, script_config)
-            results[device.id] = result
-        
-        return results
-```
-
-## Configuration
-
-### Custom Socket Path
-
-```python
-# Custom socket path
-client = StellarClient(socket_path="/custom/path/stellar.sock")
-
-# Custom timeout
-client = StellarClient(timeout=60)
-```
-
-### Environment Variables
-
-```bash
-export Stellar_SOCKET_PATH="/custom/stellar.sock"
-export Stellar_TIMEOUT=60
-```
-
-## Error Handling
-
-```python
-from stellar_client.exceptions import (
-    DeviceNotFoundError,
-    FileTransferError,
-    ComputeError,
-    ConnectionError
-)
-
-try:
-    result = client.echo.ping("invalid-device")
-except DeviceNotFoundError:
-    print("Device not found")
-except ConnectionError:
-    print("Connection failed")
-```
-
-## Advanced Features
-
-### Circuit Breaker
-
-The client includes automatic circuit breaker protection:
-
-```python
-# Circuit breaker will open after 5 consecutive failures
-# and attempt recovery after 60 seconds
-client = StellarClient()  # Circuit breaker enabled by default
-```
-
-### Retry Logic
-
-Built-in exponential backoff retry:
-
-```python
-# Customizable via client configuration
-from stellar_client.utils import RetryPolicy
-
-retry_policy = RetryPolicy(
-    max_retries=5,
-    backoff_factor=2.0,
-    max_backoff=120.0
-)
-```
-
-### Progress Tracking
-
-```python
-def progress_callback(bytes_transferred, total_bytes):
-    percent = (bytes_transferred / total_bytes) * 100
-    print(f"Progress: {percent:.1f}%")
-
-# Use with file operations
-client.file.download_file(
-    device_id=device_id,
-    remote_path="/large_file.dat",
-    local_path="./local_file.dat",
-    progress_callback=progress_callback
-)
+# Stream logs (like container.logs(stream=True))
+for line in run.logs(stream=True):
+    print(line)
 ```
 
 ## API Reference
 
-### StellarClient
+### Client Creation
 
-Main synchronous client class.
+```python
+import stellar_client
 
-#### Methods
+# Recommended: from environment
+client = stellar_client.from_env()
 
-- `list_devices()` → `List[Device]`
-- `get_device(device_id: str)` → `Device`
-- `connect_to_peer(peer_info: str)` → `bool`
-- `get_node_info()` → `Dict[str, Any]`
+# Or with custom socket path
+client = stellar.from_env(socket_path="/custom/path/stellar.sock")
 
-#### Properties
+# Or create directly
+client = stellar_client.StellarClient(socket_path="/custom/path/stellar.sock")
+```
 
-- `echo: EchoProtocol`
-- `file: FileProtocol` 
-- `compute: ComputeProtocol`
-- `proxy: ProxyProtocol`
+### Devices
 
+```python
+# List all devices
+devices = client.devices.list()
+
+# List including local device
+devices = client.devices.list(include_self=True)
+
+# Get specific device
+device = client.devices.get("device_id")
+
+# Connect to new peer
+device = client.devices.connect("/ip4/127.0.0.1/tcp/4001/p2p/peer_id")
+
+# Device operations
+device.ping()                    # Ping the device
+device.info()                    # Get device information
+device.tree()                    # Get file tree
+device.files().list("/")         # List files
+device.files().download(...)     # Download file
+device.files().upload(...)       # Upload file
+```
+
+### Compute Operations
+
+```python
+# Run a command
+run = client.compute.run(
+    device_id="device_id",
+    command="python",
+    args=["script.py"],
+    env={"VAR": "value"},
+    working_dir="/path/to/work"
+)
+
+# List runs for a device
+runs = client.compute.list("device_id")
+
+# Get specific run
+run = client.compute.get("device_id", "run_id")
+
+# Run operations
+run.wait()                       # Wait for completion
+run.cancel()                     # Cancel running operation
+run.remove()                     # Remove run record
+run.logs()                       # Get logs
+run.logs(stream=True)           # Stream logs
+run.stdout()                     # Get stdout
+run.stderr()                     # Get stderr
+run.status                       # Get status
+run.exit_code                    # Get exit code
+```
+
+### Proxy Connections
+
+```python
+# Create proxy
+proxy = client.proxy.create(
+    device_id="device_id",
+    local_port=8080,
+    remote_host="127.0.0.1",
+    remote_port=80
+)
+
+# List all proxies
+proxies = client.proxy.list()
+
+# Get proxy by port
+proxy = client.proxy.get(8080)
+
+# Close proxy
+proxy.close()
+```
+
+### Policy Management
+
+```python
+# Get policy
+policy = client.policy.get()
+
+# Update policy
+client.policy.update(enable=True)
+
+# Whitelist management
+client.policy.add_to_whitelist("device_id")
+client.policy.remove_from_whitelist("device_id")
+whitelist = client.policy.get_whitelist()
+```
+
+### Node Information
+
+```python
+# Get node info
+info = client.info()
+print(f"Node ID: {info.id}")
+print(f"Devices: {info.devices_count}")
+
+# Health check
+health = client.ping()
+```
 
 ## Examples
 
-See the `examples/` directory for complete working examples:
+### Basic Device Operations
 
-- `basic_usage.py` - Basic client operations
-- `file_transfer.py` - File upload/download examples
-- `compute_example.py` - Remote script execution
-- `federated_learning.py` - Complete FL workflow
-- `unified_usage.py` - Synchronous client usage
+```python
+import stellar_client
+
+client = stellar_client.from_env()
+
+# List and ping all devices
+for device in client.devices.list():
+    print(f"Device: {device.id}")
+    try:
+        device.ping()
+        print("  ✓ Online")
+    except Exception as e:
+        print(f"  ✗ Offline: {e}")
+```
+
+### File Transfer
+
+```python
+import stellar_client
+
+client = stellar_client.from_env()
+device = client.devices.get("device_id")
+
+# Upload file
+device.files().upload(
+    local_path="./local_file.txt",
+    remote_path="/remote/path/file.txt"
+)
+
+# Download file
+device.files().download(
+    remote_path="/remote/path/file.txt",
+    local_path="./downloaded_file.txt"
+)
+```
+
+### Compute Execution with Streaming
+
+```python
+import stellar_client
+
+client = stellar_client.from_env()
+device = client.devices.get("device_id")
+
+# Run command
+run = client.compute.run(
+    device_id=device.id,
+    command="python",
+    args=["-c", "import time; [print(i) for i in range(10)]"]
+)
+
+# Stream stdout in real-time
+for line in run.stdout(stream=True):
+    print(f"Output: {line}")
+
+# Wait for completion
+run.wait()
+print(f"Exit code: {run.exit_code}")
+```
+
+### Proxy Setup
+
+```python
+import stellar_client
+
+client = stellar_client.from_env()
+device = client.devices.get("device_id")
+
+# Create proxy to remote service
+proxy = client.proxy.create(
+    device_id=device.id,
+    local_port=8080,
+    remote_host="127.0.0.1",
+    remote_port=80
+)
+
+print(f"Proxy created on port {proxy.port}")
+print(f"Access remote service at http://localhost:{proxy.port}")
+
+# Later, close the proxy
+proxy.close()
+```
+
+## Error Handling
+
+The client uses a comprehensive exception hierarchy:
+
+```python
+from stellar_client import (
+    StellarException,        # Base exception
+    ConnectionError,         # Connection issues
+    DeviceNotFoundError,     # Device not found
+    ComputeError,            # Compute operation errors
+    FileTransferError,       # File transfer errors
+    ProtocolError,           # Protocol-level errors
+)
+
+try:
+    device = client.devices.get("invalid_id")
+except DeviceNotFoundError as e:
+    print(f"Device not found: {e}")
+```
+
+## Context Manager
+
+The client supports context manager protocol:
+
+```python
+with stellar_client.from_env() as client:
+    devices = client.devices.list()
+    # Client automatically closed on exit
+```
+
+## Comparison with docker-py
+
+| docker-py | stellar-client |
+|-----------|----------------|
+| `docker.from_env()` | `stellar_client.from_env()` |
+| `client.containers.list()` | `client.devices.list()` |
+| `client.containers.get(id)` | `client.devices.get(id)` |
+| `container.logs()` | `run.logs()` |
+| `container.logs(stream=True)` | `run.logs(stream=True)` |
+| `client.images.pull(...)` | `client.compute.run(...)` |
+| `client.networks.list()` | `client.proxy.list()` |
+
+## Architecture
+
+The client follows clean architecture principles:
+
+- **API Layer** (`api.py`): Low-level HTTP client
+- **Resources** (`resources/`): Resource managers and objects
+- **Models** (`models/`): Pydantic data models
+- **Utils** (`utils/`): Helper functions and utilities
+- **Exceptions** (`exceptions.py`): Exception hierarchy
 
 ## Contributing
 
-1. Fork the repository
-2. Create a feature branch
-3. Install development dependencies: `pip install -e .[dev]`
-4. Run tests: `pytest`
-5. Submit a pull request
+Contributions are welcome! Please follow the existing code style and add tests for new features.
 
 ## License
 
-MIT License - see LICENSE file for details.
+MIT License

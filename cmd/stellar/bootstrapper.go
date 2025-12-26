@@ -2,11 +2,10 @@ package main
 
 import (
 	"flag"
-	"os"
 	"stellar/p2p/node"
 )
 
-func bootstrapperCommand() {
+func bootstrapperCommand(args []string) {
 	bootstrapperCmd := flag.NewFlagSet("bootstrapper", flag.ExitOnError)
 
 	// Connection
@@ -20,7 +19,7 @@ func bootstrapperCommand() {
 
 	debug := bootstrapperCmd.Bool("debug", false, "debug mode")
 
-	bootstrapperCmd.Parse(os.Args[2:])
+	bootstrapperCmd.Parse(args)
 
 	n, nodeErr := node.NewBootstrapper(
 		*listenHost,

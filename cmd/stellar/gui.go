@@ -2,14 +2,13 @@ package main
 
 import (
 	"flag"
-	"os"
 	"stellar/core/gui"
 )
 
-func guiCommand() {
+func guiCommand(args []string) {
 	guiCmd := flag.NewFlagSet("gui", flag.ExitOnError)
 	bypass := guiCmd.Bool("bypass", false, "start node directly with default settings")
-	guiCmd.Parse(os.Args[2:])
+	guiCmd.Parse(args)
 
 	app, err := gui.NewGUIApp()
 	if err != nil {

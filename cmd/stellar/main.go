@@ -2,7 +2,6 @@ package main
 
 import (
 	"flag"
-	"fmt"
 	"os"
 
 	golog "github.com/ipfs/go-log/v2"
@@ -22,23 +21,30 @@ func main() {
 		flag.PrintDefaults()
 	}
 
+	args := os.Args
+	subCommand := ""
 	if len(os.Args) < 2 {
-		fmt.Println("expected 'key', 'bootstrapper', 'node', 'gui', 'conda' subcommands")
-		os.Exit(1)
+		logger.Warn("expected 'key', 'bootstrapper', 'node', 'gui', 'conda' subcommands")
+		// os.Exit(1)
+		subCommand = "gui"
+		args = os.Args[1:]
+	} else {
+		subCommand = args[1]
+		args = args[2:]
 	}
 
-	switch os.Args[1] {
+	switch subCommand {
 	case "key":
-		keyCommand()
+		keyCommand(args)
 	case "bootstrapper":
-		bootstrapperCommand()
+		bootstrapperCommand(args)
 	case "node":
-		nodeCommand()
+		nodeCommand(args)
 	case "gui":
-		guiCommand()
+		guiCommand(args)
 	case "conda":
-		condaCommand()
+		condaCommand(args)
 	default:
-		os.Exit(1)
+		logger.Fatalf("unknown command: %s", subCommand)
 	}
 }

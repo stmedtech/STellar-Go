@@ -16,15 +16,11 @@ def get_default_socket_path() -> str:
         # Unix socket path - check both possible locations
         home = os.path.expanduser("~")
         
-        # First try the actual location used by the Go server
-        stellar_dir = os.path.join(home, ".local", "share", "Stellar")
+        # First try the actual location used by the Go server (lowercase)
+        stellar_dir = os.path.join(home, ".local", "share", "stellar")
         socket_path = os.path.join(stellar_dir, "stellar.sock")
         if os.path.exists(socket_path):
             return socket_path
-            
-        # Fallback to the old cache location
-        cache_dir = os.path.join(home, ".cache", "stellar")
-        return os.path.join(cache_dir, "stellar.sock")
 
 
 def validate_device_id(device_id: str) -> bool:
@@ -48,12 +44,20 @@ def format_bytes(bytes_count: int) -> str:
 
 def sanitize_file_path(file_path: str) -> str:
     """Sanitize file path to prevent directory traversal."""
+    # Handle root path specially
+    if file_path == "/" or file_path == "":
+        return "/"
+    
     # Remove any path traversal attempts
     sanitized = os.path.normpath(file_path)
     
-    # Remove leading slashes and dots to prevent absolute path access
-    while sanitized.startswith(('/', '.', '\\')):
+    # Remove leading dots to prevent directory traversal, but preserve leading slash for absolute paths
+    while sanitized.startswith(('.', '\\')):
         sanitized = sanitized[1:]
+    
+    # Ensure path starts with / for absolute paths (but not for relative paths)
+    if not sanitized.startswith('/') and file_path.startswith('/'):
+        sanitized = '/' + sanitized
         
     return sanitized
 

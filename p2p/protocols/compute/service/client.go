@@ -297,15 +297,13 @@ func (h *RawExecutionHandle) complete(err error, exitCode int) {
 		return
 	}
 	h.once.Do(func() {
-		// Best-effort send; channels are buffered.
-		select {
-		case h.exitCh <- exitCode:
-		default:
-		}
-		select {
-		case h.doneCh <- err:
-		default:
-		}
+		// Channels are buffered (size 1), so sends should always succeed.
+		// However, we must ensure values are sent before closing channels.
+		// Use blocking sends to guarantee delivery - if the buffer is full,
+		// it means the receiver is ready, so the send will succeed immediately.
+		// If the buffer is empty, the send will also succeed immediately.
+		h.exitCh <- exitCode
+		h.doneCh <- err
 		close(h.exitCh)
 		close(h.doneCh)
 	})
@@ -344,8 +342,8 @@ func (c *Client) Cancel(ctx context.Context, runID string) error {
 		return fmt.Errorf("cancel failed: %s", cancelResponse.Error)
 	}
 
-		return nil
-	}
+	return nil
+}
 
 // Status returns the status of a command execution
 func (c *Client) Status(ctx context.Context, runID string) (*StatusResponse, error) {
@@ -364,7 +362,7 @@ func (c *Client) Status(ctx context.Context, runID string) (*StatusResponse, err
 	requestPacket, err := protocol.NewComputeStatusPacket(req)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
-}
+	}
 
 	response, err := c.SendRequest(ctx, requestPacket, matchComputeStatusResponse(runID))
 	if err != nil {

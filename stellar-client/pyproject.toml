@@ -2,6 +2,9 @@
 requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
+[tool.setuptools]
+packages = {find = {exclude = ["tests*"]}}
+
 [project]
 name = "stellar-client"
 version = "0.1.0"
@@ -28,12 +31,14 @@ dependencies = [
     "requests>=2.28.0",
     "pydantic>=1.10.0",
     "typing-extensions>=4.0.0",
+    "requests"
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0.0",
     "pytest-mock>=3.10.0",
+    "pytest-timeout>=2.1.0",
     "black>=22.0.0",
     "isort>=5.10.0",
     "mypy>=1.0.0",
@@ -62,3 +67,12 @@ warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
 disallow_incomplete_defs = true
+
+[tool.pytest.ini_options]
+# Default timeout for tests (30 seconds per test)
+timeout = 30
+timeout_method = "thread"
+# Markers for test organization
+markers = [
+    "integration: marks tests as integration tests (deselect with '-m \"not integration\"')",
+]

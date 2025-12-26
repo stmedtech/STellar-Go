@@ -26,5 +26,4 @@ const (
 	StellarFileSend           string = "send"
 )
 
-// Compute protocol (raw execution) - clean-slate implementation.
-const StellarComputeProtocol protocol.ID = "/stellar-compute/1.0.0"
+const StellarComputeProtocol protocol.ID = "/stellar-compute/1.1.0"

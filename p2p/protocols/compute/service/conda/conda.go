@@ -82,6 +82,32 @@ func CommandPath() (string, error) {
 	return condaPath, nil
 }
 
+func copyFile(src, dst string) error {
+	sourceFile, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("failed to open source file: %w", err)
+	}
+	defer sourceFile.Close()
+
+	destinationFile, err := os.Create(dst)
+	if err != nil {
+		return fmt.Errorf("failed to create destination file: %w", err)
+	}
+	defer destinationFile.Close()
+
+	_, err = io.Copy(destinationFile, sourceFile) // Copy the content
+	if err != nil {
+		return fmt.Errorf("failed to copy file: %w", err)
+	}
+
+	err = destinationFile.Sync() // Ensure data is flushed to disk
+	if err != nil {
+		return fmt.Errorf("failed to sync destination file: %w", err)
+	}
+
+	return nil
+}
+
 func Download(folder, url string) (string, error) {
 	resp, getErr := http.Get(url)
 	if getErr != nil {
@@ -95,6 +121,7 @@ func Download(folder, url string) (string, error) {
 	if _, err := os.Stat(filePath); errors.Is(err, os.ErrNotExist) {
 		if contentType := resp.Header.Get("Content-Type"); contentType == "application/octet-stream" {
 			f, _ := os.OpenFile(tempDestinationPath, os.O_CREATE|os.O_WRONLY, 0644)
+			defer os.Remove(tempDestinationPath)
 			defer f.Close()
 
 			bar := progressbar.DefaultBytes(
@@ -103,7 +130,10 @@ func Download(folder, url string) (string, error) {
 			)
 			io.Copy(io.MultiWriter(f, bar), resp.Body)
 
-			defer os.Rename(tempDestinationPath, filePath)
+			copyErr := copyFile(tempDestinationPath, filePath)
+			if copyErr != nil {
+				return "", fmt.Errorf("failed to copy file: %w", copyErr)
+			}
 
 			return filePath, nil
 		} else {

@@ -75,7 +75,7 @@ func TestMainFunction(t *testing.T) {
 				if len(tt.args) >= 2 {
 					switch tt.args[1] {
 					case "key":
-						keyCommand()
+						keyCommand(tt.args[1:])
 					case "bootstrapper":
 						// Use a timeout for bootstrapper as it may hang
 						// Set up args to use different ports to avoid conflicts
@@ -85,7 +85,7 @@ func TestMainFunction(t *testing.T) {
 
 						done := make(chan bool)
 						go func() {
-							bootstrapperCommand()
+							bootstrapperCommand(tt.args[1:])
 							done <- true
 						}()
 						select {
@@ -99,7 +99,7 @@ func TestMainFunction(t *testing.T) {
 						// Use a timeout for node as it may hang
 						done := make(chan bool)
 						go func() {
-							nodeCommand()
+							nodeCommand(tt.args[1:])
 							done <- true
 						}()
 						select {
@@ -113,7 +113,7 @@ func TestMainFunction(t *testing.T) {
 						// Use a timeout for gui as it may hang
 						done := make(chan bool)
 						go func() {
-							guiCommand()
+							guiCommand(tt.args[1:])
 							done <- true
 						}()
 						select {
@@ -176,7 +176,7 @@ func TestCommandFunctions(t *testing.T) {
 	// Test that all command functions exist and can be called
 	tests := []struct {
 		name     string
-		function func()
+		function func(args []string)
 	}{
 		{"keyCommand", keyCommand},
 		{"bootstrapperCommand", bootstrapperCommand},

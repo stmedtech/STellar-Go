@@ -25,11 +25,26 @@ func FindCondaPath() (string, error) {
 	if condaDir, fileErr := GetCondaDownloadPath(); fileErr == nil {
 		// Check for conda in local install
 		if runtime.GOOS == "windows" {
+			// 1. Stellar local install (condaDir)
 			if condaPath := filepath.Join(condaDir, "Scripts", "conda.exe"); cmdExists(condaPath) {
 				return condaPath, nil
 			}
 			if condaPath := filepath.Join(condaDir, "_conda.exe"); cmdExists(condaPath) {
 				return condaPath, nil
+			}
+			// 2. Common default user installation paths (Anaconda/Miniconda)
+			userProfile := os.Getenv("USERPROFILE")
+			commonPaths := []string{
+				filepath.Join(userProfile, "anaconda3", "Scripts", "conda.exe"),
+				filepath.Join(userProfile, "Miniconda3", "Scripts", "conda.exe"),
+				filepath.Join(userProfile, "AppData", "Local", "Continuum", "anaconda3", "Scripts", "conda.exe"),
+				filepath.Join(userProfile, "AppData", "Local", "miniconda3", "Scripts", "conda.exe"),
+				"conda", // check in PATH
+			}
+			for _, candidate := range commonPaths {
+				if cmdExists(candidate) {
+					return candidate, nil
+				}
 			}
 		} else {
 			if condaPath := filepath.Join(condaDir, "bin", "conda"); cmdExists(condaPath) {

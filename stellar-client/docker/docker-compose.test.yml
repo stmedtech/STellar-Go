@@ -1,0 +1,125 @@
+version: '3.8'
+
+x-defaults: &defaults
+  build:
+    context: ../..
+    dockerfile: stellar-client/docker/test.Dockerfile
+  networks:
+    - stellar-test-network
+
+services:
+  # Bootstrapper node - acts as relay and DHT bootstrap
+  # Uses fixed bootstrap key for reproducible peer ID: 12D3KooW9ttuSFa68YvBeat21vFDmCAwEZKLJ14h6SHFht2usRFj
+  bootstrap:
+    <<: *defaults
+    command: /usr/local/bin/stellar-go bootstrapper -host 0.0.0.0 -port 43210 -b64privkey XSuGuO3ARB96aYdQ07vjx6Nnl4/gLCP9ddvpCT4XdbABKROdC4aQOpHvcWzm2+Sb0+2wXY+35GMIfmaY95DUJg== -relay -debug
+    healthcheck:
+      test: ["CMD", "ls", "/"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    # No ports exposed - internal network only
+
+  # Node 1 - API server node (runs Unix socket server)
+  node1:
+    <<: *defaults
+    command: >
+      sh -c "
+      /app/docker/generate-bootstrappers.sh &&
+      cp /app/bootstrap-data/bootstrappers.txt /app/bootstrappers.txt &&
+      mkdir -p /app/data /app/data/tmp &&
+      /usr/local/bin/stellar-go node --host 0.0.0.0 --port 4001 --disable-policy
+      "
+    depends_on:
+      bootstrap:
+        condition: service_healthy
+    volumes:
+      - stellar-socket:/root/.local/share/stellar
+      - bootstrappers-txt:/app/bootstrap-data
+    healthcheck:
+      test: ["CMD", "test", "-S", "/root/.local/share/stellar/stellar.sock"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+      start_period: 10s
+
+  # Node 2 - Regular node (for device discovery)
+  node2:
+    <<: *defaults
+    command: >
+      sh -c "
+      /app/docker/generate-bootstrappers.sh &&
+      cp /app/bootstrap-data/bootstrappers.txt /app/bootstrappers.txt &&
+      mkdir -p /app/data /app/data/tmp &&
+      /usr/local/bin/stellar-go node --host 0.0.0.0 --port 4002 --disable-policy --no-socket=true
+      "
+    depends_on:
+      bootstrap:
+        condition: service_healthy
+    volumes:
+      - bootstrappers-txt:/app/bootstrap-data
+    healthcheck:
+      test: ["CMD", "ls", "/"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # Node 3 - Regular node (for device discovery)
+  node3:
+    <<: *defaults
+    command: >
+      sh -c "
+      /app/docker/generate-bootstrappers.sh &&
+      cp /app/bootstrap-data/bootstrappers.txt /app/bootstrappers.txt &&
+      mkdir -p /app/data /app/data/tmp &&
+      /usr/local/bin/stellar-go node --host 0.0.0.0 --port 4003 --disable-policy --no-socket=true
+      "
+    depends_on:
+      bootstrap:
+        condition: service_healthy
+    volumes:
+      - bootstrappers-txt:/app/bootstrap-data
+    healthcheck:
+      test: ["CMD", "ls", "/"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+
+  # Test runner - runs Python client tests
+  test-runner:
+    <<: *defaults
+    volumes:
+      - stellar-socket:/root/.local/share/stellar
+      # Mount test files from host so changes are reflected without rebuilding
+      - ../tests:/app/tests:ro
+      - ../stellar_client:/app/stellar_client:ro
+    depends_on:
+      node1:
+        condition: service_healthy
+      node2:
+        condition: service_healthy
+      node3:
+        condition: service_healthy
+    environment:
+      - PYTHONPATH=/app
+      - STELLAR_SOCKET_PATH=/root/.local/share/stellar/stellar.sock
+      - MIN_DEVICES=2
+      - MAX_WAIT=120
+    working_dir: /app
+    entrypoint: ["/app/docker/docker-test-entrypoint.sh"]
+    # Arguments are passed to pytest
+    # Default behavior (no args) runs test_client_api.py and test_client_api_comprehensive.py
+    # Can override with: docker-compose run test-runner pytest -v tests/test_specific.py
+
+volumes:
+  stellar-socket:
+  bootstrappers-txt:
+
+networks:
+  stellar-test-network:
+    driver: bridge
+    internal: true  # No external access

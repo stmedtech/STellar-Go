@@ -38,7 +38,7 @@ func TestStellarFileCommands(t *testing.T) {
 }
 
 func TestStellarComputeProtocol(t *testing.T) {
-	assert.Equal(t, protocol.ID("/stellar-compute/1.0.0"), StellarComputeProtocol)
+	assert.Equal(t, protocol.ID("/stellar-compute/1.1.0"), StellarComputeProtocol)
 }
 
 func TestProtocolIDTypes(t *testing.T) {

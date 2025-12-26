@@ -208,6 +208,10 @@ func NewNode(
 	}
 	lopts = append(lopts, buildListenAddrOptions(listenHost, listenPort)...)
 
+	// Disable resource manager to prevent stream limit errors in test environments
+	// This allows unlimited streams, which is needed for compute operations
+	lopts = append(lopts, libp2p.ResourceManager(&network.NullResourceManager{}))
+
 	lopts = append(lopts, opts...)
 
 	host, err := libp2p.New(lopts...)
@@ -588,6 +592,9 @@ func (n *Node) DiscoverDevices() {
 	time.Sleep(3 * time.Second)
 
 	routingDiscovery := drouting.NewRoutingDiscovery(kademliaDHT)
+
+	// Add lock for concurrent map write protection
+	var connectedPeersLock sync.Mutex
 	connectedPeers := make(map[peer.ID]bool)
 	advertised := false
 	advertiseTime := time.Time{}
@@ -678,12 +685,20 @@ func (n *Node) DiscoverDevices() {
 				}
 				foundCount++
 
+				// Lock on connectedPeers to read & write safely
+				connectedPeersLock.Lock()
+				alreadyConnected := connectedPeers[p.ID] && n.Host.Network().Connectedness(p.ID) == network.Connected
+				wasConnected := connectedPeers[p.ID]
+				connectedPeersLock.Unlock()
+
 				// Skip if already connected
-				if connectedPeers[p.ID] && n.Host.Network().Connectedness(p.ID) == network.Connected {
+				if alreadyConnected {
 					continue
 				}
-				if connectedPeers[p.ID] {
+				if wasConnected {
+					connectedPeersLock.Lock()
 					delete(connectedPeers, p.ID)
+					connectedPeersLock.Unlock()
 				}
 
 				// Skip existing devices (check both discovered and healthy)
@@ -705,7 +720,9 @@ func (n *Node) DiscoverDevices() {
 						logger.Debugf("Failed connecting to %s, error: %s", peerInfo.ID.String(), discoverErr)
 						return
 					}
+					connectedPeersLock.Lock()
 					connectedPeers[peerInfo.ID] = true
+					connectedPeersLock.Unlock()
 					newPeers++
 					logger.Infof("Connected to peer %s", device.ID.String())
 				}(p)

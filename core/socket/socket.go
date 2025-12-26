@@ -1,12 +1,14 @@
 package socket
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"stellar/core/constant"
@@ -135,10 +137,38 @@ func (s *APIServer) AddPolicyWhiteList(c *gin.Context) {
 }
 
 func (s *APIServer) RemovePolicyWhiteList(c *gin.Context) {
-	deviceId := c.PostForm("deviceId")
-	if err := s.Node.Policy.RemoveWhiteList(deviceId); err != nil {
-		c.AbortWithError(404, err)
+	// For DELETE requests, prefer query parameter (more standard)
+	// But also support form data in body for compatibility
+	deviceId := c.Query("deviceId")
+	if deviceId == "" {
+		// Try reading from body if Content-Type is form-urlencoded
+		contentType := c.GetHeader("Content-Type")
+		if contentType == "application/x-www-form-urlencoded" {
+			body, err := io.ReadAll(c.Request.Body)
+			if err == nil {
+				values, err := url.ParseQuery(string(body))
+				if err == nil {
+					deviceId = values.Get("deviceId")
+				}
+				c.Request.Body = io.NopCloser(bytes.NewBuffer(body))
+			}
+		}
+		// Fallback to PostForm for POST requests
+		if deviceId == "" {
+			deviceId = c.PostForm("deviceId")
+		}
 	}
+	if deviceId == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "deviceId is required"})
+		return
+	}
+	if err := s.Node.Policy.RemoveWhiteList(deviceId); err != nil {
+		// Return 404 if device not found, but also log the error for debugging
+		logger.Warnf("Failed to remove device from whitelist: %v", err)
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true})
 }
 
 // Health check endpoint
@@ -498,7 +528,6 @@ func (s *APIServer) Start() {
 	server.GET("/devices/:deviceId/compute/:runId/stdout", s.StreamStdout)
 	server.GET("/devices/:deviceId/compute/:runId/stderr", s.StreamStderr)
 	server.GET("/devices/:deviceId/compute/:runId/logs", s.StreamLogs)
-	server.POST("/devices/:deviceId/compute/:runId/stdin", s.SendStdin)
 
 	// Proxy protocol endpoints
 	server.POST("/proxy", s.CreateProxy)
@@ -878,32 +907,4 @@ func (s *APIServer) StreamLogs(c *gin.Context) {
 		}
 		c.Data(http.StatusOK, "application/json", data)
 	}
-}
-
-// SendStdin sends input to a running compute operation
-func (s *APIServer) SendStdin(c *gin.Context) {
-	deviceID := c.Param("deviceId")
-	runID := c.Param("runId")
-
-	s.computeRunsMu.RLock()
-	run, exists := s.computeRuns[runID]
-	s.computeRunsMu.RUnlock()
-
-	if !exists || run.DeviceID != deviceID {
-		s.errorResponse(c, http.StatusNotFound, "Run not found", nil)
-		return
-	}
-
-	if run.handle.Stdin == nil {
-		s.errorResponse(c, http.StatusBadRequest, "Stdin not available for this run", nil)
-		return
-	}
-
-	bytesWritten, err := io.Copy(run.handle.Stdin, c.Request.Body)
-	if err != nil {
-		s.errorResponse(c, http.StatusInternalServerError, "Failed to write to stdin", err.Error())
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"bytes_written": bytesWritten})
 }

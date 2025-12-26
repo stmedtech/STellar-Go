@@ -12,8 +12,8 @@ import (
 	"stellar/p2p/protocols/compute/streams"
 )
 
-func condaCommand() {
-	if len(os.Args) < 3 {
+func condaCommand(allArgs []string) {
+	if len(allArgs) < 1 {
 		// Create handler to get usage (handler is single source of truth)
 		ops, _ := conda.NewCondaOperations("")
 		handler := conda.NewCondaHandler(ops)
@@ -21,8 +21,8 @@ func condaCommand() {
 		os.Exit(1)
 	}
 
-	subcommand := os.Args[2]
-	args := os.Args[3:]
+	subcommand := allArgs[0]
+	args := allArgs[1:]
 
 	// Use handler (single source of truth) for all commands
 	ctx := context.Background()

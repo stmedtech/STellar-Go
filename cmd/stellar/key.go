@@ -2,18 +2,17 @@ package main
 
 import (
 	"flag"
-	"os"
 	"stellar/p2p/identity"
 
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
-func keyCommand() {
+func keyCommand(args []string) {
 	keyCmd := flag.NewFlagSet("key", flag.ExitOnError)
 	seed := keyCmd.Int64("seed", 0, "set random seed for private key generation")
 	b64privkey := keyCmd.String("b64privkey", "", "import base64 encoded Ed25519 private key raw bytes")
 
-	keyCmd.Parse(os.Args[2:])
+	keyCmd.Parse(args)
 
 	if *b64privkey == "" {
 		privKey, privKeyErr := identity.GeneratePrivateKey(*seed)

@@ -3,7 +3,6 @@ package main
 import (
 	"flag"
 	"net"
-	"os"
 	"stellar/core/device"
 )
 
@@ -19,7 +18,7 @@ func GetFreePort() (port uint64, err error) {
 	return
 }
 
-func nodeCommand() {
+func nodeCommand(args []string) {
 	nodeCmd := flag.NewFlagSet("node", flag.ExitOnError)
 
 	// Connection
@@ -37,7 +36,7 @@ func nodeCommand() {
 	noSocketServer := nodeCmd.Bool("no-socket", false, "open socket server or not")
 	apiServer := nodeCmd.Bool("api", false, "open api server or not")
 
-	nodeCmd.Parse(os.Args[2:])
+	nodeCmd.Parse(args)
 
 	device := device.Device{}
 
