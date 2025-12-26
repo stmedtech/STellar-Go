@@ -22,6 +22,7 @@ type condaOperationsInterface interface {
 	RemoveEnvironment(ctx context.Context, name string) (*CommandExecution, error)
 	UpdateEnvironment(ctx context.Context, name, yamlPath string) (*CommandExecution, error)
 	InstallPackage(ctx context.Context, envName, packageName string) (*CommandExecution, error)
+	InstallClient(ctx context.Context, envName string) (*CommandExecution, error)
 	RunPython(ctx context.Context, env, code string, stdin io.Reader) (*CommandExecution, error)
 	RunScript(ctx context.Context, env, scriptPath string, args []string, stdin io.Reader) (*CommandExecution, error)
 	RunConda(ctx context.Context, args []string, stdin io.Reader) (*CommandExecution, error)
@@ -94,6 +95,12 @@ func (h *CondaHandler) HandleSubcommand(ctx context.Context, subcommand string, 
 		}
 		return h.ops.InstallPackage(ctx, args[0], args[1])
 
+	case "install-client":
+		if len(args) < 1 {
+			return nil, fmt.Errorf("environment name required")
+		}
+		return h.ops.InstallClient(ctx, args[0])
+
 	case "path":
 		path, err := h.ops.CommandPath(ctx)
 		if err != nil {
@@ -156,6 +163,7 @@ Environment Management:
   remove <name>           Remove a conda environment
   update <name> <yaml>    Update environment from YAML file
   install <env> <pkg>     Install a package in an environment
+  install-client <env>    Install bundled stellar-client Python package into environment
   get <name>              Get the path of an environment
 
 Python Execution:
@@ -178,6 +186,7 @@ Examples:
   stellar conda remove myenv
   stellar conda update myenv environment.yml
   stellar conda install myenv numpy
+  stellar conda install-client myenv
   stellar conda get myenv
   stellar conda run-python myenv "print('Hello, World!')"
   stellar conda run-script myenv script.py arg1 arg2

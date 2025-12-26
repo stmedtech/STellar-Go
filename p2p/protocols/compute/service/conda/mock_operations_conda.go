@@ -132,6 +132,19 @@ func (m *MockCondaOperations) InstallPackage(ctx context.Context, envName, packa
 	return createMockCommandExecution("package installed", "", 0), nil
 }
 
+// InstallClient mocks stellar-client installation
+func (m *MockCondaOperations) InstallClient(ctx context.Context, envName string) (*CommandExecution, error) {
+	if envName == "" {
+		return nil, fmt.Errorf("environment name is empty")
+	}
+
+	// Accept any non-empty environment name (environments may have been created in previous requests)
+	// Only fail if it's obviously invalid (empty)
+	// For base or any other environment, assume it exists (created in previous request)
+
+	return createMockCommandExecution("stellar-client installed", "", 0), nil
+}
+
 // RunPython mocks Python code execution
 func (m *MockCondaOperations) RunPython(ctx context.Context, env, code string, stdin io.Reader) (*CommandExecution, error) {
 	if env == "" {

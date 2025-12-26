@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	assets "stellar"
 	"stellar/core/constant"
 
 	golog "github.com/ipfs/go-log/v2"
@@ -511,6 +513,405 @@ func (o *CondaOperations) InstallPackage(ctx context.Context, envName, packageNa
 
 	// Install package - return streaming execution
 	return o.executeCommand(ctx, condaPath, []string{"install", "--name", envName, packageName, "-y"}, nil)
+}
+
+// InstallClient installs the bundled stellar-client Python package into a conda environment
+// Extracts the embedded stellar-client directory and installs it using pip
+// Returns CommandExecution for streaming installation output
+// The installation is permanent (not editable) and temp files are cleaned up after completion
+func (o *CondaOperations) InstallClient(ctx context.Context, envName string) (*CommandExecution, error) {
+	if envName == "" {
+		return nil, fmt.Errorf("environment name is empty")
+	}
+
+	condaPath, err := o.getCondaPath()
+	if err != nil {
+		return nil, err
+	}
+
+	// Verify environment exists (non-blocking check)
+	if _, err := o.GetEnvironment(ctx, envName); err != nil {
+		return nil, fmt.Errorf("environment not found: %s", envName)
+	}
+
+	// Get stellar path for temporary extraction
+	appDir, err := constant.StellarPath()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get stellar path: %w", err)
+	}
+
+	// Create temporary directory for extraction
+	tempDir := filepath.Join(appDir, "temp", fmt.Sprintf("stellar-client-%d", time.Now().UnixNano()))
+	if err := os.MkdirAll(tempDir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create temp directory: %w", err)
+	}
+
+	// Extract embedded stellar-client directory
+	// The embedded path is "stellar-client", so we extract it to tempDir
+	// This will create tempDir/stellar-client/ with all the files
+	clientDir := filepath.Join(tempDir, "stellar-client")
+	if err := extractEmbeddedClient(clientDir); err != nil {
+		os.RemoveAll(tempDir)
+		return nil, fmt.Errorf("failed to extract stellar-client: %w", err)
+	}
+
+	// Verify pyproject.toml exists before installation
+	pyprojectPath := filepath.Join(clientDir, "pyproject.toml")
+	if _, err := os.Stat(pyprojectPath); os.IsNotExist(err) {
+		os.RemoveAll(tempDir)
+		return nil, fmt.Errorf("pyproject.toml not found in extracted package at %s", pyprojectPath)
+	}
+
+	// Verify critical __init__.py files exist before building
+	initPyPath := filepath.Join(clientDir, "stellar_client", "__init__.py")
+	if _, err := os.Stat(initPyPath); os.IsNotExist(err) {
+		operationsLogger.Errorf("CRITICAL: __init__.py not found at %s", initPyPath)
+		// List what's actually in the stellar_client directory
+		stellarClientDir := filepath.Join(clientDir, "stellar_client")
+		if entries, listErr := os.ReadDir(stellarClientDir); listErr == nil {
+			operationsLogger.Errorf("Contents of %s:", stellarClientDir)
+			for _, entry := range entries {
+				operationsLogger.Errorf("  - %s (dir: %v)", entry.Name(), entry.IsDir())
+			}
+		}
+		os.RemoveAll(tempDir)
+		return nil, fmt.Errorf("__init__.py not found in extracted package at %s - package will not work", initPyPath)
+	}
+	operationsLogger.Infof("Verified __init__.py exists at %s", initPyPath)
+
+	// Install using pip in the conda environment
+	// Use conda run to execute pip install in the environment
+	// Install without -e flag for permanent installation (not editable)
+	// Use python -m pip to ensure we use the correct Python and pip from the conda environment
+	// The clientDir already contains the stellar-client directory structure with pyproject.toml
+	// Build wheel first, then install it to ensure proper package structure
+	operationsLogger.Infof("Building and installing stellar-client from %s into conda environment %s", clientDir, envName)
+
+	// First, build the wheel to ensure proper package structure
+	buildExec, err := o.executeCommand(ctx, condaPath, []string{
+		"run", "-n", envName, "--no-capture-output",
+		"python", "-m", "pip", "install", "--quiet", "build",
+	}, nil)
+	if err != nil {
+		os.RemoveAll(tempDir)
+		return nil, fmt.Errorf("failed to install build tool: %w", err)
+	}
+
+	// Wait for build tool installation
+	bridge := NewStreamBridge(buildExec)
+	_, _ = bridge.BridgeTo(io.Discard, io.Discard)
+	_, buildErr := bridge.Wait()
+	if buildErr != nil {
+		os.RemoveAll(tempDir)
+		return nil, fmt.Errorf("build tool installation failed: %w", buildErr)
+	}
+
+	// Build the wheel
+	// Use --wheel flag and ensure all files are included
+	wheelExec, err := o.executeCommand(ctx, condaPath, []string{
+		"run", "-n", envName, "--no-capture-output",
+		"python", "-m", "build", "--wheel", "--outdir", tempDir, clientDir,
+	}, nil)
+	if err != nil {
+		os.RemoveAll(tempDir)
+		return nil, fmt.Errorf("failed to start wheel build: %w", err)
+	}
+
+	// Wait for wheel build to complete
+	wheelBridge := NewStreamBridge(wheelExec)
+	_, _ = wheelBridge.BridgeTo(io.Discard, io.Discard)
+	_, wheelErr := wheelBridge.Wait()
+	if wheelErr != nil {
+		os.RemoveAll(tempDir)
+		return nil, fmt.Errorf("wheel build failed: %w", wheelErr)
+	}
+
+	// Find the built wheel
+	wheelFiles, err := filepath.Glob(filepath.Join(tempDir, "*.whl"))
+	if err != nil || len(wheelFiles) == 0 {
+		os.RemoveAll(tempDir)
+		return nil, fmt.Errorf("wheel file not found after build")
+	}
+	wheelFile := wheelFiles[0]
+	operationsLogger.Infof("Built wheel: %s", wheelFile)
+
+	// Install the wheel (this ensures proper package structure)
+	// Use --force-reinstall to ensure we install the newly built wheel
+	exec, err := o.executeCommand(ctx, condaPath, []string{
+		"run", "-n", envName, "--no-capture-output",
+		"python", "-m", "pip", "install", "--force-reinstall", wheelFile,
+	}, nil)
+	if err != nil {
+		// Clean up on error
+		os.RemoveAll(tempDir)
+		return nil, fmt.Errorf("failed to start pip install: %w", err)
+	}
+
+	// Wrap the execution to clean up temp directory after completion and verify installation
+	return wrapWithCleanupAndVerify(exec, tempDir, condaPath, envName), nil
+}
+
+// wrapWithCleanupAndVerify wraps a CommandExecution to clean up a directory after completion and verify installation
+func wrapWithCleanupAndVerify(execution *CommandExecution, cleanupDir string, condaPath string, envName string) *CommandExecution {
+	// Create new channels that will be closed after cleanup
+	done := make(chan error, 1)
+	exitCode := make(chan int, 1)
+
+	// Monitor the original execution and clean up when done
+	go func() {
+		// Wait for original execution to complete
+		originalErr := <-execution.Done
+		originalCode := <-execution.ExitCode
+
+		// If installation succeeded, verify it's actually installed
+		if originalErr == nil && originalCode == 0 {
+			// Verify installation by trying to import the package
+			verifyCtx, verifyCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer verifyCancel()
+
+			// Write verification script to a temporary file to avoid conda's newline limitation
+			verifyScriptFile := filepath.Join(cleanupDir, "verify_install.py")
+			verifyScript := `import sys
+import os
+import importlib.util
+
+# First, check if package can be imported
+try:
+    import stellar_client
+    print("✓ import stellar_client succeeded")
+    if hasattr(stellar_client, '__file__') and stellar_client.__file__:
+        print(f"  Package location: {stellar_client.__file__}")
+        print(f"  Package path: {stellar_client.__path__}")
+    else:
+        print(f"  WARNING: Package is namespace package (no __file__)")
+        print(f"  Package path: {stellar_client.__path__}")
+except Exception as e:
+    print(f"✗ import stellar_client failed: {e}")
+    import traceback
+    traceback.print_exc()
+    sys.exit(1)
+
+# Check if __init__.py exists and can be read
+try:
+    if hasattr(stellar_client, '__file__') and stellar_client.__file__:
+        init_path = os.path.join(os.path.dirname(stellar_client.__file__), "__init__.py")
+        if os.path.exists(init_path):
+            print(f"✓ __init__.py found at: {init_path}")
+            with open(init_path, 'r') as f:
+                content = f.read()
+                if 'from_env' in content:
+                    print("✓ __init__.py contains 'from_env'")
+                else:
+                    print("✗ __init__.py does NOT contain 'from_env'")
+                    print(f"  First 500 chars: {content[:500]}")
+        else:
+            print(f"✗ __init__.py NOT found at: {init_path}")
+            print(f"  Directory contents: {os.listdir(os.path.dirname(stellar_client.__file__))}")
+    else:
+        # Namespace package - check all paths
+        print("Checking namespace package paths for __init__.py...")
+        found_init = False
+        for pkg_path in stellar_client.__path__:
+            init_path = os.path.join(pkg_path, "__init__.py")
+            if os.path.exists(init_path):
+                print(f"✓ __init__.py found at: {init_path}")
+                found_init = True
+                with open(init_path, 'r') as f:
+                    content = f.read()
+                    if 'from_env' in content:
+                        print("✓ __init__.py contains 'from_env'")
+                    else:
+                        print("✗ __init__.py does NOT contain 'from_env'")
+                        print(f"  First 500 chars: {content[:500]}")
+                break
+            else:
+                print(f"  Checking: {pkg_path}")
+                if os.path.exists(pkg_path):
+                    print(f"    Directory contents: {os.listdir(pkg_path)}")
+        if not found_init:
+            print("✗ __init__.py NOT found in any package path")
+except Exception as e:
+    print(f"✗ Error checking __init__.py: {e}")
+    import traceback
+    traceback.print_exc()
+
+# Now try the actual import that users need
+try:
+    from stellar_client import from_env, StellarClient
+    print("✓ from stellar_client import from_env, StellarClient succeeded")
+    print("✓ stellar_client imports verified successfully")
+except Exception as e:
+    print(f"✗ from stellar_client import from_env, StellarClient failed: {e}")
+    print(f"  Available attributes in stellar_client: {[x for x in dir(stellar_client) if not x.startswith('_')]}")
+    import traceback
+    traceback.print_exc()
+    sys.exit(1)
+`
+			// Write script to file
+			if err := os.WriteFile(verifyScriptFile, []byte(verifyScript), 0644); err != nil {
+				operationsLogger.Errorf("Failed to write verification script: %v", err)
+				originalErr = fmt.Errorf("failed to write verification script: %w", err)
+				originalCode = 1
+			} else {
+				// Execute the script file
+				verifyCmd := exec.CommandContext(verifyCtx, condaPath, "run", "-n", envName, "--no-capture-output",
+					"python", verifyScriptFile)
+				verifyOutput, verifyErr := verifyCmd.CombinedOutput()
+				if verifyErr != nil {
+					operationsLogger.Errorf("Installation completed but verification FAILED: %v\nOutput: %s", verifyErr, string(verifyOutput))
+					// FAIL the installation if verification fails - this is critical
+					originalErr = fmt.Errorf("package installed but imports failed - installation is NOT usable: %v\nVerification output: %s", verifyErr, string(verifyOutput))
+					originalCode = 1
+				} else {
+					operationsLogger.Infof("stellar-client successfully installed and verified in environment %s", envName)
+				}
+			}
+		} else {
+			operationsLogger.Warnf("Installation failed with error: %v (exit code: %d)", originalErr, originalCode)
+		}
+
+		// Clean up temp directory
+		if err := os.RemoveAll(cleanupDir); err != nil {
+			operationsLogger.Warnf("Failed to clean up temp directory %s: %v", cleanupDir, err)
+		} else {
+			operationsLogger.Infof("Cleaned up temp directory: %s", cleanupDir)
+		}
+
+		// Forward the results
+		done <- originalErr
+		exitCode <- originalCode
+		close(done)
+		close(exitCode)
+	}()
+
+	// Return a new CommandExecution that wraps the original
+	return &CommandExecution{
+		RunID:    execution.RunID,
+		Stdin:    execution.Stdin,
+		Stdout:   execution.Stdout,
+		Stderr:   execution.Stderr,
+		Done:     done,
+		ExitCode: exitCode,
+		Cancel: func() {
+			// Cancel original execution
+			if execution.Cancel != nil {
+				execution.Cancel()
+			}
+			// Clean up temp directory on cancel
+			os.RemoveAll(cleanupDir)
+		},
+	}
+}
+
+// extractEmbeddedClient extracts the embedded stellar-client directory to the target path
+func extractEmbeddedClient(targetDir string) error {
+	// Ensure target directory exists
+	if err := os.MkdirAll(targetDir, 0755); err != nil {
+		return fmt.Errorf("failed to create target directory: %w", err)
+	}
+
+	// Track extracted files for debugging
+	var extractedFiles []string
+	var missingInitFiles []string
+
+	// Walk the embedded stellar-client directory
+	// First, try to directly read __init__.py files to verify they're embedded
+	initFiles := []string{
+		"stellar-client/stellar_client/__init__.py",
+		"stellar-client/stellar_client/models/__init__.py",
+		"stellar-client/stellar_client/resources/__init__.py",
+		"stellar-client/stellar_client/utils/__init__.py",
+	}
+	for _, initFile := range initFiles {
+		if data, err := assets.Assets.ReadFile(initFile); err == nil {
+			operationsLogger.Infof("Found embedded file: %s (size: %d bytes)", initFile, len(data))
+		} else {
+			operationsLogger.Warnf("Missing embedded file: %s (error: %v)", initFile, err)
+		}
+	}
+
+	err := fs.WalkDir(assets.Assets, "stellar-client", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		// Calculate relative path from stellar-client root
+		relPath, err := filepath.Rel("stellar-client", path)
+		if err != nil {
+			return fmt.Errorf("failed to calculate relative path: %w", err)
+		}
+
+		// Skip the root directory entry itself (relPath == ".")
+		if relPath == "." {
+			return nil
+		}
+
+		targetPath := filepath.Join(targetDir, relPath)
+
+		if d.IsDir() {
+			// Create directory
+			return os.MkdirAll(targetPath, 0755)
+		}
+
+		// Create parent directory
+		if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+			return err
+		}
+
+		// Read file from embedded FS
+		data, err := assets.Assets.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("failed to read embedded file %s: %w", path, err)
+		}
+
+		// Write file to target
+		if err := os.WriteFile(targetPath, data, 0644); err != nil {
+			return fmt.Errorf("failed to write file %s: %w", targetPath, err)
+		}
+
+		extractedFiles = append(extractedFiles, relPath)
+
+		// Check if this is an __init__.py file
+		if filepath.Base(relPath) == "__init__.py" {
+			operationsLogger.Infof("Extracted __init__.py: %s", relPath)
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return err
+	}
+
+	// Verify critical files were extracted
+	criticalFiles := []string{
+		"stellar_client/__init__.py",
+		"stellar_client/models/__init__.py",
+		"stellar_client/resources/__init__.py",
+		"stellar_client/utils/__init__.py",
+		"pyproject.toml",
+	}
+
+	for _, critical := range criticalFiles {
+		found := false
+		for _, extracted := range extractedFiles {
+			if extracted == critical {
+				found = true
+				break
+			}
+		}
+		if !found {
+			missingInitFiles = append(missingInitFiles, critical)
+			operationsLogger.Warnf("Critical file not found in embedded assets: %s", critical)
+		}
+	}
+
+	if len(missingInitFiles) > 0 {
+		operationsLogger.Warnf("Missing critical files in extraction: %v", missingInitFiles)
+		operationsLogger.Infof("Extracted files: %v", extractedFiles)
+	}
+
+	return nil
 }
 
 // ============================================================================
