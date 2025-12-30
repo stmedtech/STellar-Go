@@ -133,7 +133,11 @@ func (s *APIServer) GetPolicyWhiteList(c *gin.Context) {
 
 func (s *APIServer) AddPolicyWhiteList(c *gin.Context) {
 	deviceId := c.PostForm("deviceId")
-	s.Node.Policy.AddWhiteList(deviceId)
+	if err := s.Node.Policy.AddWhiteList(deviceId); err != nil {
+		c.AbortWithError(http.StatusBadRequest, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true})
 }
 
 func (s *APIServer) RemovePolicyWhiteList(c *gin.Context) {
@@ -489,6 +493,12 @@ func (s *APIServer) CloseProxy(c *gin.Context) {
 }
 
 func (s *APIServer) Start() {
+	// Configure GIN to use os.Stderr (which is redirected to both terminal and file in main.go)
+	// This ensures all GIN logs (including [GIN-debug] and [ERROR]) are captured in the log file
+	// IMPORTANT: Set these BEFORE calling gin.Default() to ensure GIN uses the redirected stderr
+	gin.DefaultWriter = os.Stderr
+	gin.DefaultErrorWriter = os.Stderr
+
 	server := gin.Default()
 
 	// Initialize compute runs map

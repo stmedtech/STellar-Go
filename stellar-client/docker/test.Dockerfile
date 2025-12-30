@@ -49,8 +49,6 @@ func main() {
 	switch subCommand {
 	case "key":
 		keyCommand(args)
-	case "bootstrapper":
-		bootstrapperCommand(args)
 	case "node":
 		nodeCommand(args)
 	case "conda":

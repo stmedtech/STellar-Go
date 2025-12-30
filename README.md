@@ -68,10 +68,10 @@ The Stellar platform provides several CLI commands:
 #### Bootstrapper Operations
 ```bash
 # Start a bootstrap node
-./stellar bootstrapper --host 0.0.0.0 --port 4001
+./stellar node --bootstrapper --host 0.0.0.0 --port 4001
 
 # Start with relay functionality
-./stellar bootstrapper --relay --debug
+./stellar node --bootstrapper --relay --debug
 ```
 
 #### Key Management

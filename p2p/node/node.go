@@ -76,98 +76,23 @@ func buildListenAddrOptions(listenHost string, listenPort uint64) []libp2p.Optio
 	}
 }
 
-func NewBootstrapper(
-	listenHost string,
-	listenPort uint64,
-	b64privkey string,
-	relayNode bool,
-	debug bool,
-	opts ...libp2p.Option,
-) (n *Node, err error) {
-	lopts := []libp2p.Option{
-		libp2p.Security(libp2ptls.ID, libp2ptls.New),
-		libp2p.Security(noise.ID, noise.New),
-
-		libp2p.DefaultTransports,
-		libp2p.DefaultMuxers,
-
-		libp2p.NATPortMap(),
-		libp2p.EnableNATService(),
-		libp2p.EnableHolePunching(),
-	}
-	lopts = append(lopts, buildListenAddrOptions(listenHost, listenPort)...)
-
-	if debug {
-		// prevent "connections per ip limit exceeded" error
-		lopts = append(lopts, libp2p.ResourceManager(&network.NullResourceManager{}))
-	}
-
-	if b64privkey != "" {
-		opt, privkeyErr := LoadPrivateKey(b64privkey)
-		if privkeyErr != nil {
-			logger.Fatalln(privkeyErr)
-		}
-		lopts = append(lopts, opt)
-	} else {
-		opt, privkeyErr := GeneratePrivateKey(0)
-		if privkeyErr != nil {
-			logger.Fatalln(privkeyErr)
-		}
-		lopts = append(lopts, opt)
-	}
-
-	host, err := libp2p.New(lopts...)
-	if err != nil {
-		return
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-
-	n = &Node{
-		Bootstrapper: true,
-		RelayNode:    relayNode,
-		Policy: &policy.ProtocolPolicy{
-			Enable:    true,
-			WhiteList: make([]string, 0),
-		},
-
-		CTX:    ctx,
-		Cancel: cancel,
-
-		Host:              host,
-		DHT:               nil,
-		discoveredDevices: make(map[string]Device),
-		healthyDevices:    make(map[string]Device),
-	}
-	logger.Infof("Node ID: %v", n.ID())
-
-	logger.Infof("Start listening to %v...", n.Host.Addrs())
-
-	if n.RelayNode {
-		_, relayErr := relay.New(n.Host)
-		if relayErr != nil {
-			err = relayErr
-			return
-		}
-
-		relayInfo := peer.AddrInfo{
-			ID:    n.Host.ID(),
-			Addrs: n.Host.Addrs(),
-		}
-		logger.Infof("Connect to this relay node using: %v", relayInfo)
-	}
-
-	if _, dhtErr := n.InitDHT(true); dhtErr != nil {
-		err = dhtErr
-		return
-	}
-
-	return
-}
-
 func NewNode(
 	listenHost string,
 	listenPort uint64,
+	opts ...libp2p.Option,
+) (n *Node, err error) {
+	return NewNodeWithOptions(listenHost, listenPort, false, false, "", false, opts...)
+}
+
+// NewNodeWithOptions creates a new node with optional bootstrapper and relay capabilities.
+// When bootstrapper is true, the node acts as both a bootstrapper and a regular node.
+func NewNodeWithOptions(
+	listenHost string,
+	listenPort uint64,
+	bootstrapper bool,
+	relayNode bool,
+	b64privkey string,
+	debug bool,
 	opts ...libp2p.Option,
 ) (n *Node, err error) {
 	peerChan := make(chan peer.AddrInfo, 100)
@@ -208,9 +133,21 @@ func NewNode(
 	}
 	lopts = append(lopts, buildListenAddrOptions(listenHost, listenPort)...)
 
+	// Handle private key
+	if b64privkey != "" {
+		opt, privkeyErr := LoadPrivateKey(b64privkey)
+		if privkeyErr != nil {
+			logger.Fatalln(privkeyErr)
+		}
+		lopts = append(lopts, opt)
+	}
+
 	// Disable resource manager to prevent stream limit errors in test environments
 	// This allows unlimited streams, which is needed for compute operations
-	lopts = append(lopts, libp2p.ResourceManager(&network.NullResourceManager{}))
+	// For bootstrapper in debug mode, also disable resource manager
+	if debug || !bootstrapper {
+		lopts = append(lopts, libp2p.ResourceManager(&network.NullResourceManager{}))
+	}
 
 	lopts = append(lopts, opts...)
 
@@ -222,8 +159,8 @@ func NewNode(
 	ctx, cancel := context.WithCancel(context.Background())
 
 	n = &Node{
-		Bootstrapper: false,
-		RelayNode:    false,
+		Bootstrapper: bootstrapper,
+		RelayNode:    relayNode,
 		Policy: &policy.ProtocolPolicy{
 			Enable:    true,
 			WhiteList: make([]string, 0),
@@ -237,19 +174,53 @@ func NewNode(
 		discoveredDevices: make(map[string]Device),
 		healthyDevices:    make(map[string]Device),
 	}
+
+	// Load whitelist from config immediately after policy initialization
+	// This ensures saved whitelist is loaded before bootstrappers are added
+	n.Policy.LoadFromConfig()
+
 	logger.Infof("Node ID: %v", n.ID())
 
 	logger.Infof("Start listening to %v...", n.Host.Addrs())
 
-	// Start providing peers for auto-relay
+	// Start providing peers for auto-relay (both bootstrapper and regular nodes do this)
 	go n.Provide(peerChan)
 
-	if _, dhtErr := n.InitDHT(false); dhtErr != nil {
+	// Enable relay service if relayNode is true
+	if n.RelayNode {
+		_, relayErr := relay.New(n.Host)
+		if relayErr != nil {
+			err = relayErr
+			return
+		}
+
+		relayInfo := peer.AddrInfo{
+			ID:    n.Host.ID(),
+			Addrs: n.Host.Addrs(),
+		}
+		logger.Infof("Connect to this relay node using: %v", relayInfo)
+	}
+
+	// Initialize DHT: bootstrapper uses true, regular node uses false
+	if _, dhtErr := n.InitDHT(bootstrapper); dhtErr != nil {
 		err = dhtErr
 		return
 	}
 
 	return
+}
+
+// NewBootstrapper is a convenience function that creates a bootstrapper node.
+// It is now a wrapper around NewNodeWithOptions for backward compatibility.
+func NewBootstrapper(
+	listenHost string,
+	listenPort uint64,
+	b64privkey string,
+	relayNode bool,
+	debug bool,
+	opts ...libp2p.Option,
+) (n *Node, err error) {
+	return NewNodeWithOptions(listenHost, listenPort, true, relayNode, b64privkey, debug, opts...)
 }
 
 func (n *Node) StartMetricsServer(port uint64) {

@@ -12,7 +12,7 @@ services:
   # Uses fixed bootstrap key for reproducible peer ID: 12D3KooW9ttuSFa68YvBeat21vFDmCAwEZKLJ14h6SHFht2usRFj
   bootstrap:
     <<: *defaults
-    command: /usr/local/bin/stellar-go bootstrapper -host 0.0.0.0 -port 43210 -b64privkey XSuGuO3ARB96aYdQ07vjx6Nnl4/gLCP9ddvpCT4XdbABKROdC4aQOpHvcWzm2+Sb0+2wXY+35GMIfmaY95DUJg== -relay -debug
+    command: /usr/local/bin/stellar-go node --bootstrapper --host 0.0.0.0 --port 43210 --b64privkey XSuGuO3ARB96aYdQ07vjx6Nnl4/gLCP9ddvpCT4XdbABKROdC4aQOpHvcWzm2+Sb0+2wXY+35GMIfmaY95DUJg== --relay --debug
     healthcheck:
       test: ["CMD", "ls", "/"]
       interval: 2s

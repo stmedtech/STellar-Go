@@ -11,6 +11,8 @@ RUN go mod download
 COPY p2p ./p2p
 COPY core ./core
 COPY cmd ./cmd
-RUN cd /app/cmd/stellar && CGO_ENABLED=1 GOOS=linux go build -o /stellar
+COPY assets.go ./assets.go
+COPY stellar-client ./stellar-client
+RUN CGO_ENABLED=1 GOOS=linux go build ./cmd/stellar && mv ./stellar /stellar
 
 ENTRYPOINT [ "/stellar" ]

@@ -1,12 +1,18 @@
 x-defaults: &defaults
   build: .
-  command: node -api -disable-policy
+  entrypoint: sh -c
+  command: >
+    "
+    /app/docker/generate-bootstrappers.sh &&
+    cp /app/bootstrap-data/bootstrappers.txt /app/bootstrappers.txt &&
+    /stellar node -api -disable-policy
+    "
   depends_on:
     bootstrap:
       condition: service_healthy
   volumes:
-    - ./bootstrappers.txt:/app/bootstrappers.txt
     - ./data/test:/app/data
+    - ./stellar-client/docker:/app/docker
   healthcheck:
     test: ["CMD", "curl", "-f", "http://localhost:1524/health"]
     start_period: 10s
@@ -17,10 +23,9 @@ x-defaults: &defaults
 services:
   bootstrap:
     build: .
-    command: bootstrapper -port 43210 -b64privkey ${BOOTSTRAP_KEY} -relay -debug
-    ports:
-      - 43210:43210
-      - 5001:5001
+    command: node --bootstrapper --relay --disable-node --host 0.0.0.0 --port 43210 --b64privkey XSuGuO3ARB96aYdQ07vjx6Nnl4/gLCP9ddvpCT4XdbABKROdC4aQOpHvcWzm2+Sb0+2wXY+35GMIfmaY95DUJg== --debug
+    networks:
+      - pnet_shared
     healthcheck:
       test: [ "CMD", "ls" ]
       start_period: 5s

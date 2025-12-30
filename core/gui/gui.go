@@ -10,6 +10,7 @@ import (
 	"math"
 	"path/filepath"
 	"slices"
+	"stellar/core/config"
 	"stellar/core/constant"
 	"stellar/core/device"
 	"stellar/core/utils"
@@ -379,7 +380,7 @@ func (app *GUIApp) initDevices() fyne.CanvasObject {
 	deviceControls := container.NewHBox(filesTree, sendFile, openTerminal)
 
 	split := container.NewHSplit(content, container.NewVBox(contentText, deviceControls))
-	split.Offset = 0.2
+	split.Offset = 0.7
 
 	return split
 }
@@ -792,63 +793,139 @@ func (app *GUIApp) Setup() {
 	app.a.SetIcon(icon)
 
 	w := app.a.NewWindow("Stellar Setup Node")
-	w.Resize(fyne.NewSize(800, 600))
+	w.Resize(fyne.NewSize(800, 700))
 
-	pref := app.a.Preferences()
+	// Load config from file
+	cfg, _, err := config.LoadConfig()
+	if err != nil {
+		logger.Warnf("Failed to load config: %v, using defaults", err)
+		cfg = config.DefaultConfig()
+	}
 
 	privkey := widget.NewEntry()
-	privkey.Text = pref.StringWithFallback("stellarPrivkey", "0")
+	if cfg.B64PrivKey != "" {
+		privkey.Text = cfg.B64PrivKey
+	} else if cfg.Seed != 0 {
+		privkey.Text = strconv.FormatInt(cfg.Seed, 10)
+	} else {
+		privkey.Text = "0"
+	}
 	listenHost := widget.NewEntry()
-	listenHost.Text = pref.StringWithFallback("stellarListenHost", "0.0.0.0")
+	listenHost.Text = cfg.ListenHost
 	listenPort := widget.NewEntry()
-	listenPort.Text = pref.StringWithFallback("stellarListenPort", "0")
+	listenPort.Text = strconv.Itoa(cfg.ListenPort)
 	referenceToken := widget.NewEntry()
-	referenceToken.Text = pref.String("stellarReferenceToken")
+	referenceToken.Text = cfg.ReferenceToken
+	bootstrapper := widget.NewCheck("", func(b bool) {})
+	bootstrapper.Checked = cfg.Bootstrapper
+	relay := widget.NewCheck("", func(b bool) {})
+	relay.Checked = cfg.Relay
 	metrics := widget.NewCheck("", func(b bool) {})
-	metrics.Checked = pref.Bool("stellarMetrics")
+	metrics.Checked = cfg.Metrics
+	metricsPort := widget.NewEntry()
+	metricsPort.Text = strconv.Itoa(cfg.MetricsPort)
 	api := widget.NewCheck("", func(b bool) {})
-	api.Checked = pref.BoolWithFallback("stellarAPI", true)
+	api.Checked = cfg.APIServer
+	apiPort := widget.NewEntry()
+	apiPort.Text = strconv.Itoa(cfg.APIPort)
+	disablePolicy := widget.NewCheck("", func(b bool) {})
+	disablePolicy.Checked = cfg.DisablePolicy
+	noSocket := widget.NewCheck("", func(b bool) {})
+	noSocket.Checked = cfg.NoSocketServer
+	debug := widget.NewCheck("", func(b bool) {})
+	debug.Checked = cfg.Debug
 
 	form := &widget.Form{
 		Items: []*widget.FormItem{
-			{Text: "Private Key", Widget: privkey},
+			{Text: "Private Key (base64 or seed)", Widget: privkey},
 			{Text: "Listen Host", Widget: listenHost},
 			{Text: "Listen Port", Widget: listenPort},
 			{Text: "Reference Token", Widget: referenceToken},
+			{Text: "Run as Bootstrapper", Widget: bootstrapper},
+			{Text: "Enable Relay", Widget: relay},
 			{Text: "Enable Metrics Server", Widget: metrics},
+			{Text: "Metrics Port", Widget: metricsPort},
+			{Text: "Enable API Server", Widget: api},
+			{Text: "API Port", Widget: apiPort},
+			{Text: "Disable Policy", Widget: disablePolicy},
+			{Text: "Disable Socket Server", Widget: noSocket},
+			{Text: "Debug Mode", Widget: debug},
 		},
 		OnSubmit: func() {
-			pref.SetString("stellarPrivkey", privkey.Text)
-			pref.SetString("stellarListenHost", listenHost.Text)
-			pref.SetString("stellarListenPort", listenPort.Text)
-			pref.SetString("stellarReferenceToken", referenceToken.Text)
-			pref.SetBool("stellarMetrics", metrics.Checked)
+			// Update config
+			cfg.ListenHost = listenHost.Text
+			if port, err := strconv.Atoi(listenPort.Text); err == nil {
+				cfg.ListenPort = port
+			}
+			cfg.ReferenceToken = referenceToken.Text
+			cfg.Bootstrapper = bootstrapper.Checked
+			cfg.Relay = relay.Checked
+			cfg.Metrics = metrics.Checked
+			if port, err := strconv.Atoi(metricsPort.Text); err == nil {
+				cfg.MetricsPort = port
+			}
+			cfg.APIServer = api.Checked
+			if port, err := strconv.Atoi(apiPort.Text); err == nil {
+				cfg.APIPort = port
+			}
+			cfg.DisablePolicy = disablePolicy.Checked
+			cfg.NoSocketServer = noSocket.Checked
+			cfg.Debug = debug.Checked
 
-			device := device.Device{}
-
+			// Parse private key
 			if seed, seedErr := strconv.ParseInt(privkey.Text, 10, 64); seedErr != nil {
-				device.ImportKey(privkey.Text)
+				cfg.B64PrivKey = privkey.Text
+				cfg.Seed = 0
 			} else {
-				device.GenerateKey(seed)
+				cfg.Seed = seed
+				cfg.B64PrivKey = ""
 			}
 
-			port, portErr := strconv.ParseUint(listenPort.Text, 10, 64)
-			if portErr != nil {
-				app.showErr(portErr)
+			// Save config
+			if saveErr := config.SaveConfig(cfg); saveErr != nil {
+				app.showErr(saveErr)
 				return
 			}
 
-			device.Init(listenHost.Text, port)
+			// Start node (bootstrapper or regular)
+			device := device.Device{}
 
-			device.SetReferenceToken(referenceToken.Text)
+			// Only set key via opts if not using b64privkey directly
+			if cfg.B64PrivKey == "" {
+				device.GenerateKey(cfg.Seed)
+			}
 
-			if metrics.Checked {
-				device.Node.StartMetricsServer(5001)
+			if cfg.DisablePolicy {
+				logger.Warn("Device Policy disabled, it is recommended to turn it on in production environment.")
+			}
+
+			// Initialize device with bootstrapper options
+			device.InitWithOptions(
+				cfg.ListenHost,
+				uint64(cfg.ListenPort),
+				cfg.Bootstrapper,
+				cfg.Relay,
+				cfg.B64PrivKey,
+				cfg.Debug,
+			)
+
+			device.SetReferenceToken(cfg.ReferenceToken)
+
+			device.Node.Policy.Enable = !cfg.DisablePolicy
+
+			if cfg.Metrics {
+				device.Node.StartMetricsServer(uint64(cfg.MetricsPort))
 			}
 
 			device.StartDiscovery()
-			device.StartUnixSocket()
-			device.StartAPI(1524)
+
+			if !cfg.NoSocketServer {
+				device.StartUnixSocket()
+			}
+
+			if cfg.APIServer {
+				device.StartAPI(uint64(cfg.APIPort))
+			}
 
 			app.node = device.Node
 			app.proxy = device.Proxy
@@ -872,6 +949,106 @@ func (app *GUIApp) Setup() {
 	}
 }
 
+func (app *GUIApp) initConfig() fyne.CanvasObject {
+	cfg, _, err := config.LoadConfig()
+	if err != nil {
+		logger.Warnf("Failed to load config: %v, using defaults", err)
+		cfg = config.DefaultConfig()
+	}
+
+	privkey := widget.NewEntry()
+	if cfg.B64PrivKey != "" {
+		privkey.Text = cfg.B64PrivKey
+	} else if cfg.Seed != 0 {
+		privkey.Text = strconv.FormatInt(cfg.Seed, 10)
+	} else {
+		privkey.Text = "0"
+	}
+	listenHost := widget.NewEntry()
+	listenHost.Text = cfg.ListenHost
+	listenPort := widget.NewEntry()
+	listenPort.Text = strconv.Itoa(cfg.ListenPort)
+	referenceToken := widget.NewEntry()
+	referenceToken.Text = cfg.ReferenceToken
+	bootstrapper := widget.NewCheck("", func(b bool) {})
+	bootstrapper.Checked = cfg.Bootstrapper
+	relay := widget.NewCheck("", func(b bool) {})
+	relay.Checked = cfg.Relay
+	metrics := widget.NewCheck("", func(b bool) {})
+	metrics.Checked = cfg.Metrics
+	metricsPort := widget.NewEntry()
+	metricsPort.Text = strconv.Itoa(cfg.MetricsPort)
+	api := widget.NewCheck("", func(b bool) {})
+	api.Checked = cfg.APIServer
+	apiPort := widget.NewEntry()
+	apiPort.Text = strconv.Itoa(cfg.APIPort)
+	disablePolicy := widget.NewCheck("", func(b bool) {})
+	disablePolicy.Checked = cfg.DisablePolicy
+	noSocket := widget.NewCheck("", func(b bool) {})
+	noSocket.Checked = cfg.NoSocketServer
+	debug := widget.NewCheck("", func(b bool) {})
+	debug.Checked = cfg.Debug
+
+	form := &widget.Form{
+		Items: []*widget.FormItem{
+			{Text: "Private Key (base64 or seed)", Widget: privkey},
+			{Text: "Listen Host", Widget: listenHost},
+			{Text: "Listen Port", Widget: listenPort},
+			{Text: "Reference Token", Widget: referenceToken},
+			{Text: "Run as Bootstrapper", Widget: bootstrapper},
+			{Text: "Enable Relay", Widget: relay},
+			{Text: "Enable Metrics Server", Widget: metrics},
+			{Text: "Metrics Port", Widget: metricsPort},
+			{Text: "Enable API Server", Widget: api},
+			{Text: "API Port", Widget: apiPort},
+			{Text: "Disable Policy", Widget: disablePolicy},
+			{Text: "Disable Socket Server", Widget: noSocket},
+			{Text: "Debug Mode", Widget: debug},
+		},
+		OnSubmit: func() {
+			// Update config
+			cfg.ListenHost = listenHost.Text
+			if port, err := strconv.Atoi(listenPort.Text); err == nil {
+				cfg.ListenPort = port
+			}
+			cfg.ReferenceToken = referenceToken.Text
+			cfg.Bootstrapper = bootstrapper.Checked
+			cfg.Relay = relay.Checked
+			cfg.Metrics = metrics.Checked
+			if port, err := strconv.Atoi(metricsPort.Text); err == nil {
+				cfg.MetricsPort = port
+			}
+			cfg.APIServer = api.Checked
+			if port, err := strconv.Atoi(apiPort.Text); err == nil {
+				cfg.APIPort = port
+			}
+			cfg.DisablePolicy = disablePolicy.Checked
+			cfg.NoSocketServer = noSocket.Checked
+			cfg.Debug = debug.Checked
+
+			// Parse private key
+			if seed, seedErr := strconv.ParseInt(privkey.Text, 10, 64); seedErr != nil {
+				cfg.B64PrivKey = privkey.Text
+				cfg.Seed = 0
+			} else {
+				cfg.Seed = seed
+				cfg.B64PrivKey = ""
+			}
+
+			// Save config
+			if saveErr := config.SaveConfig(cfg); saveErr != nil {
+				app.showErr(saveErr)
+				return
+			}
+
+			dialog.ShowInformation("Success", "Configuration saved successfully!", app.w)
+		},
+	}
+	form.SubmitText = "Save Configuration"
+
+	return container.NewScroll(form)
+}
+
 func (app *GUIApp) SetupMain() {
 	w := app.a.NewWindow("Stellar Debug GUI")
 	w.Resize(fyne.NewSize(800, 600))
@@ -881,6 +1058,7 @@ func (app *GUIApp) SetupMain() {
 		container.NewTabItem("Devices", app.initDevices()),
 		container.NewTabItem("Proxies", app.initProxies()),
 		container.NewTabItem("White List", app.initWhiteList()),
+		container.NewTabItem("Configuration", app.initConfig()),
 	)
 	tabs.SetTabLocation(container.TabLocationLeading)
 
