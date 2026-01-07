@@ -518,7 +518,7 @@ func (s *Server) monitorExecution(runID string, execution *RawExecution) {
 	// try to update the status, especially for createStringOutputExecution where channels
 	// are already closed and both might read from them
 	if runInfo.Status == RunStatusRunning {
-		if exitCode != nil && *exitCode == 0 {
+		if exitCode != nil && *exitCode <= 0 {
 			runInfo.Status = RunStatusCompleted
 		} else {
 			runInfo.Status = RunStatusFailed
@@ -741,7 +741,7 @@ func (s *Server) handleCondaOperation(ctx context.Context, req protocol.ComputeR
 		runInfo.EndTime = &now
 		// Debug: check what values we have
 		// For createStringOutputExecution, doneErr should be nil and exitCode should be 0
-		if resultErr == nil && exitCode == 0 {
+		if resultErr == nil && exitCode <= 0 {
 			runInfo.Status = RunStatusCompleted
 		} else {
 			// If we're here, either resultErr is not nil or exitCode is not 0

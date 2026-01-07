@@ -666,7 +666,7 @@ func (s *APIServer) RunCompute(c *gin.Context) {
 		if err != nil {
 			run.Status = "failed"
 			run.Error = err
-		} else if exitCode == 0 {
+		} else if exitCode <= 0 {
 			run.Status = "completed"
 		} else {
 			run.Status = "failed"

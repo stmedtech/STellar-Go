@@ -153,7 +153,7 @@ func streamCommandExecution(exec streams.ExecutionStreamReader, showProgress boo
 	if stderrErr != nil && stderrErr != io.EOF {
 		return fmt.Errorf("stderr read error: %w", stderrErr)
 	}
-	if exitCode != 0 {
+	if exitCode > 0 {
 		// Provide more context for non-zero exit codes
 		if exitCode == 1 {
 			return fmt.Errorf("command failed with exit code %d. Check the output above for details", exitCode)
