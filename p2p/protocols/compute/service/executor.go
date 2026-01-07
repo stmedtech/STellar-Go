@@ -6,6 +6,8 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 )
 
 // RawExecutor implements the Executor interface using os/exec
@@ -25,16 +27,23 @@ func (e *RawExecutor) ExecuteRaw(ctx context.Context, req RawExecutionRequest) (
 	// Create context with cancellation
 	execCtx, cancel := context.WithCancel(ctx)
 
-	// Create command
-	cmd := exec.CommandContext(execCtx, req.Command, req.Args...)
+	// Set environment variables FIRST, before creating command
+	// This ensures PATH is available when exec.CommandContext looks for executables
+	env := os.Environ()
 
-	// Set environment variables
-	if len(req.Env) > 0 {
-		cmd.Env = os.Environ()
-		for k, v := range req.Env {
-			cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
-		}
-	}
+	// Apply user-provided environment variables (including PATH from server)
+	// The server provides stellar executable path + user's PATH in req.Env["PATH"]
+	env = applyUserEnvironment(env, req.Env)
+
+	// Find the executable using the custom PATH
+	// This ensures we can find stellar even if it's not in system PATH
+	commandPath := resolveExecutablePath(req.Command, env)
+
+	// Create command AFTER setting environment and finding executable
+	cmd := exec.CommandContext(execCtx, commandPath, req.Args...)
+
+	// Set the prepared environment
+	cmd.Env = env
 
 	// Set working directory
 	if req.WorkingDir != "" {
@@ -127,6 +136,67 @@ func (e *RawExecutor) ExecuteRaw(ctx context.Context, req RawExecutionRequest) (
 	}
 
 	return execution, nil
+}
+
+// applyUserEnvironment applies user-provided environment variables to the base environment
+// Special handling for PATH: merges with system PATH instead of replacing it
+func applyUserEnvironment(baseEnv []string, userEnv map[string]string) []string {
+	if len(userEnv) == 0 {
+		return baseEnv
+	}
+
+	env := baseEnv
+	pathVar := pathVarName()
+
+	for k, v := range userEnv {
+		// Special handling for PATH: merge with system PATH
+		if k == "PATH" || k == pathVar {
+			systemPath := getPathFromEnv(env)
+			mergedPath := mergePaths([]string{v}, systemPath)
+			env = setPathInEnv(env, mergedPath)
+		} else {
+			// Remove existing env var if present, then add new one
+			env = removeEnvVar(env, k)
+			env = append(env, fmt.Sprintf("%s=%s", k, v))
+		}
+	}
+
+	return env
+}
+
+// resolveExecutablePath resolves a command to its full executable path
+// If command is already an absolute/relative path, returns it as-is
+// Otherwise, searches in PATH from the environment
+func resolveExecutablePath(command string, env []string) string {
+	// If command is already a path, use it as-is
+	if filepath.IsAbs(command) || strings.Contains(command, string(filepath.Separator)) {
+		return command
+	}
+
+	// Get PATH from environment and search for executable
+	pathValue := getPathFromEnv(env)
+	if found := findExecutableInPath(command, pathValue); found != "" {
+		return found
+	}
+
+	// Fall back to system LookPath
+	if found, err := exec.LookPath(command); err == nil {
+		return found
+	}
+
+	// If still not found, return command as-is and let exec handle the error
+	return command
+}
+
+// removeEnvVar removes an environment variable from the env slice
+func removeEnvVar(env []string, key string) []string {
+	result := make([]string, 0, len(env))
+	for _, envVar := range env {
+		if !strings.HasPrefix(envVar, key+"=") {
+			result = append(result, envVar)
+		}
+	}
+	return result
 }
 
 // NOTE: We intentionally do not provide a time-based helper like WaitForCompletion here.

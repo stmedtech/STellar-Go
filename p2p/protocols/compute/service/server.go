@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -224,13 +226,16 @@ func (s *Server) handleRun(ctx context.Context, packet *protocol.HandshakePacket
 		return s.handleCondaOperation(ctx, req, stdinID, stdoutID, stderrID, logID, stdinStream, stdoutStream, stderrStream, logStream)
 	}
 
+	// Prepare environment variables with stellar executable path
+	env := s.prepareExecutionEnvironment(ctx, req.Env)
+
 	// Create execution request
 	// Note: Stdin in RawExecutionRequest is the source of stdin data
 	// The client writes to stdinStream, so we read from it
 	execReq := RawExecutionRequest{
 		Command:    req.Command,
 		Args:       req.Args,
-		Env:        req.Env,
+		Env:        env,
 		WorkingDir: req.WorkingDir,
 		Stdin:      stdinStream, // Server reads from this (client writes to it)
 	}
@@ -782,4 +787,56 @@ func (s *Server) sendStatusError(runID, errMsg string) error {
 		return err
 	}
 	return s.ControlConn().WritePacket(packet)
+}
+
+// prepareExecutionEnvironment prepares environment variables for command execution
+// It adds the stellar executable directory to PATH
+func (s *Server) prepareExecutionEnvironment(ctx context.Context, userEnv map[string]string) map[string]string {
+	// Start with user-provided environment
+	env := make(map[string]string)
+	for k, v := range userEnv {
+		env[k] = v
+	}
+
+	// Get stellar executable directory and add it to PATH
+	stellarExecDir := s.getStellarExecutableDir()
+	if stellarExecDir == "" {
+		return env
+	}
+
+	// Get existing PATH from user env
+	existingPath := env["PATH"]
+	if existingPath == "" {
+		existingPath = env[pathVarName()] // Windows case
+	}
+
+	// Merge stellar directory with existing PATH
+	newPath := mergePaths([]string{stellarExecDir}, existingPath)
+
+	// Set PATH in environment (set both for cross-platform compatibility)
+	env["PATH"] = newPath
+	env[pathVarName()] = newPath
+
+	return env
+}
+
+// getStellarExecutableDir returns the directory containing the stellar executable
+func (s *Server) getStellarExecutableDir() string {
+	execPath, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+
+	execDir := filepath.Dir(execPath)
+	// Resolve symlinks to get the actual directory
+	if resolvedPath, err := filepath.EvalSymlinks(execPath); err == nil {
+		execDir = filepath.Dir(resolvedPath)
+	}
+
+	// Verify the directory exists and is accessible
+	if _, err := os.Stat(execDir); err != nil {
+		return ""
+	}
+
+	return execDir
 }
