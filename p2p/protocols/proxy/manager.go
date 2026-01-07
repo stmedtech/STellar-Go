@@ -32,6 +32,19 @@ func NewProxyManager(node *node.Node) *ProxyManager {
 // Proxy creates a new proxy service that listens on the specified local port
 // and forwards connections to the remote peer's destination address.
 func (m *ProxyManager) Proxy(peer peer.ID, hostPort uint64, destAddr string) (proxy *ProxyService, err error) {
+	m.lock.Lock()
+	defer m.lock.Unlock()
+
+	// Filter out done proxies first to clean up the slice
+	activeProxies := make([]*ProxyService, 0, len(m.proxies))
+	for _, p := range m.proxies {
+		if !p.Done() {
+			activeProxies = append(activeProxies, p)
+		}
+	}
+	m.proxies = activeProxies
+
+	// Check if port is already in use by an active proxy
 	for _, p := range m.proxies {
 		if p.Port == hostPort {
 			err = fmt.Errorf("proxy port %d already exist", hostPort)
@@ -40,11 +53,16 @@ func (m *ProxyManager) Proxy(peer peer.ID, hostPort uint64, destAddr string) (pr
 	}
 
 	proxy = NewProxyService(m.node, hostPort, peer, destAddr)
-	m.lock.Lock()
 	m.proxies = append(m.proxies, proxy)
-	m.lock.Unlock()
 
 	if serveErr := proxy.Serve(); serveErr != nil {
+		// Remove the proxy from the slice if Serve fails
+		for i, p := range m.proxies {
+			if p == proxy {
+				m.proxies = append(m.proxies[:i], m.proxies[i+1:]...)
+				break
+			}
+		}
 		return nil, serveErr
 	}
 	return
@@ -67,12 +85,20 @@ func (m *ProxyManager) Proxies() []*ProxyService {
 // Close stops and removes the proxy service listening on the specified port.
 func (m *ProxyManager) Close(port uint64) {
 	m.lock.Lock()
+	defer m.lock.Unlock()
+
+	// Close proxies on the specified port and remove them from the slice
+	activeProxies := make([]*ProxyService, 0, len(m.proxies))
 	for _, proxy := range m.proxies {
 		if proxy.Port == port {
 			if !proxy.Done() {
 				proxy.Close()
 			}
+			// Don't add to activeProxies - effectively removes it
+		} else {
+			// Keep proxies on other ports
+			activeProxies = append(activeProxies, proxy)
 		}
 	}
-	m.lock.Unlock()
+	m.proxies = activeProxies
 }
