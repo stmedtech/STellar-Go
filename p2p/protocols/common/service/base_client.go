@@ -189,7 +189,14 @@ func (c *BaseClient) GetOrCreateStream(streamID uint32) (io.ReadWriteCloser, err
 		if stream.ID == 0 {
 			return nil, fmt.Errorf("CRITICAL BUG: Retrieved stream has ID 0 (control stream)")
 		}
-		return stream, nil
+		// Check if stream is closed - if so, remove it and create a new one
+		if stream.IsClosed() {
+			// Stream exists but is closed - remove it and create a new one
+			_ = c.multiplexer.CloseStream(streamID)
+			// Fall through to create new stream
+		} else {
+			return stream, nil
+		}
 	}
 
 	// Create new stream

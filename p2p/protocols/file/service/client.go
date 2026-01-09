@@ -224,19 +224,52 @@ func (c *Client) Send(filePath string, remoteFileName string) error {
 	defer cancel()
 
 	done := make(chan error, 1)
+	var bytesWritten int64
 	go func() {
-		_, err := io.Copy(stream, file)
-		done <- err
+		var err error
+		bytesWritten, err = io.Copy(stream, file)
+		if err != nil {
+			done <- fmt.Errorf("io.Copy error after %d bytes: %w", bytesWritten, err)
+			return
+		}
+		// Verify we wrote all data
+		fileInfo, statErr := os.Stat(filePath)
+		if statErr == nil && bytesWritten != fileInfo.Size() {
+			done <- fmt.Errorf("partial write: wrote %d bytes, expected %d", bytesWritten, fileInfo.Size())
+			return
+		}
+		done <- nil
 	}()
 
 	select {
 	case err := <-done:
-		if err != nil && err != io.EOF {
-			return fmt.Errorf("copy file: %w", err)
+		if err != nil {
+			return err
 		}
 	case <-ctx.Done():
-		return fmt.Errorf("timeout")
+		return fmt.Errorf("timeout after writing %d bytes", bytesWritten)
 	}
+
+	// CRITICAL FIX: Wait a moment before closing the stream to ensure all data
+	// has been flushed to the network. This is especially important for libp2p
+	// streams where closing the stream resets it, causing "stream reset (remote)"
+	// errors if the server is still reading.
+	// The issue occurs because io.Copy may return before all data is actually
+	// transmitted over the network (it's only written to the socket buffer).
+	// On Linux, TCP socket buffers can be large, and data may not be immediately
+	// transmitted. By waiting briefly, we allow the data to be transmitted before
+	// sending the EOF marker. The delay is proportional to the amount of data written
+	// to account for larger files taking longer to transmit.
+	// For files around 229KB, a 200ms delay should be sufficient for most network
+	// conditions, but we scale it based on the amount of data.
+	delay := time.Duration(bytesWritten/1024) * time.Millisecond // 1ms per KB
+	if delay < 100*time.Millisecond {
+		delay = 100 * time.Millisecond
+	}
+	if delay > 500*time.Millisecond {
+		delay = 500 * time.Millisecond
+	}
+	time.Sleep(delay)
 
 	return nil
 }

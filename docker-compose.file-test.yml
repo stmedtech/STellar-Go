@@ -1,0 +1,66 @@
+x-defaults: &defaults
+  build: .
+  entrypoint: sh -c
+  command: >
+    "
+    /app/docker/generate-bootstrappers.sh &&
+    cp /app/bootstrap-data/bootstrappers.txt /app/bootstrappers.txt &&
+    /stellar node -api -disable-policy
+    "
+  depends_on:
+    bootstrap:
+      condition: service_healthy
+  volumes:
+    - ./data/test:/app/data
+    - ./stellar-client/docker:/app/docker
+  healthcheck:
+    test: ["CMD", "curl", "-f", "http://localhost:1524/health"]
+    start_period: 10s
+    interval: 10s
+    timeout: 5s
+    retries: 5
+
+services:
+  bootstrap:
+    build: .
+    command: node --bootstrapper --relay --disable-node --host 0.0.0.0 --port 43210 --b64privkey XSuGuO3ARB96aYdQ07vjx6Nnl4/gLCP9ddvpCT4XdbABKROdC4aQOpHvcWzm2+Sb0+2wXY+35GMIfmaY95DUJg== --debug
+    networks:
+      - pnet_shared
+    healthcheck:
+      test: [ "CMD", "ls" ]
+      start_period: 5s
+  server-node:
+    <<: *defaults
+    networks:
+      - pnet_shared
+  client-node:
+    <<: *defaults
+    networks:
+      - pnet_shared
+    ports:
+      - "9000:9000"
+    volumes:
+      - ./data/test:/app/data
+      - ./stellar-client/docker:/app/docker
+      - file-test-shared:/shared
+  file-test-runner:
+    image: python:3.11-alpine
+    command: sh -c "apk add --no-cache curl bash xxd && bash /test/docker_file_test.sh"
+    networks:
+      - pnet_shared
+    depends_on:
+      client-node:
+        condition: service_healthy
+      server-node:
+        condition: service_healthy
+    volumes:
+      - ./tests/file_transfer:/test
+      - file-test-shared:/shared
+    environment:
+      - PYTHONUNBUFFERED=1
+
+volumes:
+  file-test-shared:
+
+networks:
+  pnet_shared:

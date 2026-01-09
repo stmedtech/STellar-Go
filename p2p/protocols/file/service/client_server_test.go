@@ -330,15 +330,31 @@ func TestFileGetConcurrent(t *testing.T) {
 func TestFileSendDestNotWritable(t *testing.T) {
 	rs := startServerAndClient(t)
 
-	// Make server root unwritable
+	// Ensure the target subdirectory doesn't exist before making parent unwritable
+	blockedDir := filepath.Join(rs.serverDir, "blocked")
+	os.RemoveAll(blockedDir) // Clean up any existing directory
+
+	// Make server root unwritable (read and execute, but not write)
 	require.NoError(t, os.Chmod(rs.serverDir, 0o500))
 	defer os.Chmod(rs.serverDir, 0o755)
+
+	// Check if running as root - root can bypass permission checks
+	// In Docker, tests often run as root, so we need to verify the actual behavior
+	if os.Geteuid() == 0 {
+		// Running as root - verify that we can still write (root bypasses permissions)
+		// This is expected behavior in Docker, so we skip the strict permission test
+		testFile := filepath.Join(rs.serverDir, ".root_test")
+		if _, err := os.Create(testFile); err == nil {
+			os.Remove(testFile)
+			t.Skip("Running as root - permission checks are bypassed by the OS")
+		}
+	}
 
 	srcDir := t.TempDir()
 	srcPath := writeFile(t, srcDir, "upload.txt", "no write")
 
 	err := rs.client.Send(srcPath, "blocked/file.txt")
-	assert.Error(t, err)
+	assert.Error(t, err, "Should fail when parent directory is not writable")
 }
 
 func TestFileGetDestNotWritable(t *testing.T) {
@@ -349,6 +365,16 @@ func TestFileGetDestNotWritable(t *testing.T) {
 	destDir := t.TempDir()
 	require.NoError(t, os.Chmod(destDir, 0o500))
 	defer os.Chmod(destDir, 0o755)
+
+	// Check if running as root - root can bypass permission checks
+	if os.Geteuid() == 0 {
+		// Running as root - verify that we can still write (root bypasses permissions)
+		testFile := filepath.Join(destDir, ".root_test")
+		if _, err := os.Create(testFile); err == nil {
+			os.Remove(testFile)
+			t.Skip("Running as root - permission checks are bypassed by the OS")
+		}
+	}
 
 	err := rs.client.Get("files/protected.txt", filepath.Join(destDir, "out.txt"))
 	assert.Error(t, err)

@@ -232,8 +232,27 @@ func (s *Server) handleSend(handshake *protocol.HandshakePacket) error {
 
 	// Ensure directory exists
 	dir := filepath.Dir(filePath)
+
+	// Check if directory exists and is writable before trying to create it
+	// This catches cases where the parent directory is not writable
+	// We need to check if we can create the directory, not just if it exists
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return s.sendSendError(fmt.Sprintf("failed to create directory: %v", err))
+	}
+
+	// Check if directory is writable by attempting to create a test file
+	// This ensures we can actually write the file before accepting the transfer
+	// This check is critical because os.MkdirAll can succeed even if the parent
+	// directory is not writable (if the directory already exists)
+	testFile := filepath.Join(dir, ".stellar_write_test")
+	testF, err := os.Create(testFile)
+	if err != nil {
+		return s.sendSendError(fmt.Sprintf("directory not writable: %v", err))
+	}
+	testF.Close()
+	if err := os.Remove(testFile); err != nil {
+		// Log but don't fail - cleanup error is not critical
+		// The important check (writability) already passed
 	}
 
 	// Allocate data stream
@@ -285,6 +304,10 @@ func (s *Server) transferFile(stream io.ReadWriteCloser, filePath string, expect
 }
 
 func (s *Server) receiveFile(stream io.ReadWriteCloser, filePath string) {
+	// CRITICAL: Don't close the stream immediately on return - the client might still be writing.
+	// Instead, we'll close it only after we're sure the transfer is complete or failed.
+	// This prevents "stream reset (remote)" errors when the client is still writing data.
+	// For libp2p streams, closing the stream resets it, which causes errors on the client side.
 	defer stream.Close()
 
 	// Read file info from data stream (JSON, newline-terminated)
@@ -302,8 +325,21 @@ func (s *Server) receiveFile(stream io.ReadWriteCloser, filePath string) {
 		for {
 			n, err := stream.Read(buf)
 			if err != nil {
-				infoChan <- result{err: err}
-				return
+				// Only report error if we haven't read any data yet
+				// If we've read some data but hit EOF before newline, that's an error
+				if err == io.EOF && len(fileInfoJSON) == 0 {
+					// EOF before any data - this is a real error
+					infoChan <- result{err: fmt.Errorf("EOF before file info: %w", err)}
+					return
+				} else if err != nil && err != io.EOF {
+					// Non-EOF error is always a problem
+					infoChan <- result{err: fmt.Errorf("read error: %w", err)}
+					return
+				} else if err == io.EOF {
+					// EOF after reading some data but no newline - incomplete file info
+					infoChan <- result{err: fmt.Errorf("EOF before newline in file info (read %d bytes)", len(fileInfoJSON))}
+					return
+				}
 			}
 			if n == 0 {
 				continue
@@ -316,7 +352,7 @@ func (s *Server) receiveFile(stream io.ReadWriteCloser, filePath string) {
 
 		var fileInfo protocol.FileInfo
 		if err := json.Unmarshal(fileInfoJSON, &fileInfo); err != nil {
-			infoChan <- result{err: err}
+			infoChan <- result{err: fmt.Errorf("unmarshal file info: %w", err)}
 			return
 		}
 		infoChan <- result{fileInfo: fileInfo, err: nil}
@@ -350,17 +386,38 @@ func (s *Server) receiveFile(stream io.ReadWriteCloser, filePath string) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := io.CopyN(file, stream, fileInfo.Size)
-		done <- err
+		bytesRead, err := io.CopyN(file, stream, fileInfo.Size)
+		// io.CopyN returns EOF if it reads fewer bytes than requested
+		// This is an error condition - we need all the data
+		if err != nil {
+			if err == io.EOF && bytesRead != fileInfo.Size {
+				done <- fmt.Errorf("unexpected EOF: got %d bytes, expected %d", bytesRead, fileInfo.Size)
+			} else {
+				done <- fmt.Errorf("copy failed after %d bytes (expected %d): %w", bytesRead, fileInfo.Size, err)
+			}
+			return
+		}
+		if bytesRead != fileInfo.Size {
+			done <- fmt.Errorf("partial read: got %d bytes, expected %d", bytesRead, fileInfo.Size)
+			return
+		}
+		done <- nil
 	}()
 
 	select {
 	case err := <-done:
-		if err != nil && err != io.EOF {
+		if err != nil {
+			// Any error (including EOF with partial read) means the transfer failed
+			// CRITICAL: Don't close the stream immediately - the client might still be writing
+			// Wait a bit to allow the client to finish writing before closing the stream
+			// This prevents "stream reset (remote)" errors when using libp2p streams
+			time.Sleep(200 * time.Millisecond)
 			os.Remove(filePath)
 			return
 		}
 	case <-transferCtx.Done():
+		// Timeout - wait a bit before closing to allow client to finish
+		time.Sleep(200 * time.Millisecond)
 		os.Remove(filePath)
 		return
 	}

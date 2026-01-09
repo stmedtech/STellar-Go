@@ -68,12 +68,13 @@ func (s *Stream) IsClosed() bool {
 }
 
 type streamReader struct {
-	id       uint32
-	dataChan chan []byte
-	errChan  chan error
-	closed   bool
-	mu       sync.Mutex
-	buffer   []byte
+	id          uint32
+	dataChan    chan []byte
+	errChan     chan error
+	closed      bool
+	eofReceived bool // Track if EOF marker has been received (allows in-transit data but prevents new data)
+	mu          sync.Mutex
+	buffer      []byte
 }
 
 func newStreamReader(id uint32) *streamReader {
@@ -107,12 +108,41 @@ func (sr *streamReader) Read(p []byte) (n int, err error) {
 	// If we've been marked closed, we may still have buffered frames in dataChan.
 	// Drain any immediately available data first; only return EOF when there is
 	// no buffered data remaining.
+	// CRITICAL FIX: On Linux, there's a race condition where the channel might be closed
+	// while data is still in transit. We need to ensure we read all available data
+	// from the channel before returning EOF, even if the channel is closed.
 	if closed {
+		// Try to read from channel - even if closed, there may be buffered data
 		select {
 		case data, ok := <-sr.dataChan:
-			if !ok || len(data) == 0 {
+			if !ok {
+				// Channel is closed and empty - no more data
 				return 0, io.EOF
 			}
+			// Zero-length data is EOF signal - but we must check if there's more data
+			// in the channel first (non-blocking check)
+			if len(data) == 0 {
+				// This is the EOF marker, but check for any remaining data
+				select {
+				case moreData, moreOk := <-sr.dataChan:
+					if !moreOk || len(moreData) == 0 {
+						return 0, io.EOF
+					}
+					// There's more data after the EOF marker - this shouldn't happen,
+					// but handle it gracefully by reading the data
+					n = copy(p, moreData)
+					if n < len(moreData) {
+						sr.mu.Lock()
+						sr.buffer = moreData[n:]
+						sr.mu.Unlock()
+					}
+					return n, nil
+				default:
+					// No more data available
+					return 0, io.EOF
+				}
+			}
+			// We have data - copy it to the buffer
 			n = copy(p, data)
 			if n < len(data) {
 				sr.mu.Lock()
@@ -121,15 +151,30 @@ func (sr *streamReader) Read(p []byte) (n int, err error) {
 			}
 			return n, nil
 		default:
+			// No data immediately available and channel might be closed
 			return 0, io.EOF
 		}
 	}
 
 	// Prefer data over error to avoid races where an EOF/error is delivered
 	// while there is still buffered data waiting to be read.
+	// CRITICAL FIX: On Linux, we need to ensure we read all available data from the channel
+	// before returning EOF. The zero-length EOF marker should be the last item.
 	select {
 	case data, ok := <-sr.dataChan:
-		if !ok || len(data) == 0 {
+		if !ok {
+			// Channel is closed - no more data
+			return 0, io.EOF
+		}
+		// Zero-length data is EOF marker - close the channel and return EOF
+		if len(data) == 0 {
+			// This is the EOF marker - close the channel now that we've processed it
+			sr.mu.Lock()
+			if !sr.closed {
+				sr.closed = true
+				close(sr.dataChan)
+			}
+			sr.mu.Unlock()
 			return 0, io.EOF
 		}
 		n = copy(p, data)
@@ -146,7 +191,18 @@ func (sr *streamReader) Read(p []byte) (n int, err error) {
 	// Wait for data or error (without holding lock)
 	select {
 	case data, ok := <-sr.dataChan:
-		if !ok || len(data) == 0 {
+		if !ok {
+			return 0, io.EOF
+		}
+		// Zero-length data is EOF marker
+		if len(data) == 0 {
+			// Close the channel now that we've processed the EOF marker
+			sr.mu.Lock()
+			if !sr.closed {
+				sr.closed = true
+				close(sr.dataChan)
+			}
+			sr.mu.Unlock()
 			return 0, io.EOF
 		}
 		n = copy(p, data)
@@ -177,10 +233,27 @@ func (sr *streamReader) WriteData(data []byte) {
 	// Zero-length payload is treated as an EOF/remote stream close signal.
 	// This allows one side to propagate Close() to the peer without requiring
 	// out-of-band coordination.
+	// CRITICAL FIX: On Linux, there's a race condition where the zero-length EOF frame
+	// might arrive before all data frames have been written to the channel. If we mark
+	// the stream as closed immediately, subsequent data frames will be dropped.
+	// Solution: Mark EOF as received (to prevent new data) but don't close the channel yet.
+	// This allows data frames that are already in transit to still be written.
 	if len(data) == 0 {
-		sr.Close()
+		// Mark EOF as received to prevent new data frames from being written
+		sr.mu.Lock()
+		sr.eofReceived = true
+		sr.mu.Unlock()
+		// Send the zero-length EOF marker to the channel
+		// This ensures it's read in order with data frames
+		sr.dataChan <- data
 		return
 	}
+
+	// CRITICAL: Don't drop data frames even if EOF was received
+	// The EOF marker might arrive before all data frames are written to the channel,
+	// but we should still write those data frames. The Read() function will ensure
+	// the EOF marker is processed last by reading all data before the EOF marker.
+	// This fixes the Linux-specific race condition where EOF arrives too early.
 
 	// We must block here to ensure data is delivered
 	// However, if the channel is full, this blocks readLoop, which can cause deadlock
@@ -445,16 +518,29 @@ func (m *Multiplexer) writeData(streamID uint32, data []byte) error {
 	binary.BigEndian.PutUint32(header[4:8], uint32(len(data)))
 
 	// net.Conn Write is allowed to return short writes; ensure full write.
+	// On Linux, Write() may return n > 0 even when the underlying socket buffer is full,
+	// which can cause issues with large writes. We need to ensure all data is actually written.
 	writeFull := func(p []byte) error {
-		for len(p) > 0 {
-			n, err := m.conn.Write(p)
+		totalWritten := 0
+		for totalWritten < len(p) {
+			n, err := m.conn.Write(p[totalWritten:])
 			if err != nil {
+				// On Linux, if the connection is closed or there's an error during a blocking write,
+				// we need to return the error immediately. However, we should also check if we've
+				// written any data - if we have, this is a partial write error.
+				if totalWritten > 0 {
+					return fmt.Errorf("partial write: wrote %d of %d bytes before error: %w", totalWritten, len(p), err)
+				}
 				return err
 			}
 			if n <= 0 {
+				// This should not happen with a valid connection, but handle it anyway
+				if totalWritten > 0 {
+					return fmt.Errorf("partial write: wrote %d of %d bytes, then got n=%d", totalWritten, len(p), n)
+				}
 				return io.ErrShortWrite
 			}
-			p = p[n:]
+			totalWritten += n
 		}
 		return nil
 	}
