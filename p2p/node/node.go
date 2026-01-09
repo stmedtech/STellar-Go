@@ -65,6 +65,11 @@ type Node struct {
 	CTX    context.Context
 	Cancel context.CancelFunc
 	DLock  sync.RWMutex
+
+	// Relay reservation tracking
+	relayReservations    map[peer.ID]time.Time // Track when reservations were made
+	relayReservationTTL  time.Duration         // TTL for relay reservations
+	relayReservationLock sync.RWMutex          // Lock for relay reservation map
 }
 
 func buildListenAddrOptions(listenHost string, listenPort uint64) []libp2p.Option {
@@ -173,6 +178,9 @@ func NewNodeWithOptions(
 		DHT:               nil,
 		discoveredDevices: make(map[string]Device),
 		healthyDevices:    make(map[string]Device),
+
+		relayReservations:   make(map[peer.ID]time.Time),
+		relayReservationTTL: time.Hour, // Match the ReservationTTL in relay resources
 	}
 
 	// Load whitelist from config immediately after policy initialization
@@ -188,7 +196,23 @@ func NewNodeWithOptions(
 
 	// Enable relay service if relayNode is true
 	if n.RelayNode {
-		_, relayErr := relay.New(n.Host)
+		resources := relay.Resources{
+			Limit: &relay.RelayLimit{
+				Duration: 7 * 24 * time.Hour, // 7 days for long protocol connections
+				Data:     1 << 36,            // 64GB
+			},
+
+			ReservationTTL: time.Hour,
+
+			MaxReservations: 1 << 10,
+			MaxCircuits:     1 << 10,
+			BufferSize:      2048,
+
+			MaxReservationsPerPeer: 1,
+			MaxReservationsPerIP:   1 << 5,
+			MaxReservationsPerASN:  1 << 10,
+		}
+		_, relayErr := relay.New(n.Host, relay.WithResources(resources))
 		if relayErr != nil {
 			err = relayErr
 			return
@@ -206,6 +230,9 @@ func NewNodeWithOptions(
 		err = dhtErr
 		return
 	}
+
+	// Start periodic relay reservation refresh
+	go n.refreshRelayReservations()
 
 	return
 }
@@ -301,13 +328,10 @@ func (n *Node) InitDHT(bootstrapper bool) (anyConnected bool, err error) {
 			logger.Infof("Connection established with bootstrap node: %q", bs.ID)
 
 			// Try to reserve relay slot if bootstrap is a relay node
-			resCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-			_, relayErr := relayclient.Reserve(resCtx, host, bs)
-			cancel()
-			if relayErr == nil {
+			if n.reserveRelaySlot(ctx, bs) {
 				logger.Infof("Relay reservation established with bootstrap node: %q", bs.ID)
 			} else {
-				logger.Debugf("Bootstrap node %q is not a relay or reservation failed: %v", bs.ID, relayErr)
+				logger.Debugf("Bootstrap node %q is not a relay or reservation failed", bs.ID)
 			}
 		}(bootstrap)
 	}
@@ -526,10 +550,7 @@ func (n *Node) ConnectDevice(peerInfo peer.AddrInfo) (device *Device, err error)
 			continue
 		}
 		if n.Host.Network().Connectedness(bootstrap.ID) == network.Connected {
-			resCtx, cancel := context.WithTimeout(n.CTX, 5*time.Second)
-			_, relayErr := relayclient.Reserve(resCtx, n.Host, bootstrap)
-			cancel()
-			if relayErr == nil {
+			if n.reserveRelaySlot(n.CTX, bootstrap) {
 				relayInfos = append(relayInfos, bootstrap)
 			}
 		}
@@ -878,4 +899,104 @@ func (n *Node) Provide(peerChan chan peer.AddrInfo) {
 			return
 		}
 	}
+}
+
+// reserveRelaySlot attempts to reserve a relay slot with the given peer
+// Returns true if reservation was successful, false otherwise
+func (n *Node) reserveRelaySlot(ctx context.Context, relayPeer peer.AddrInfo) bool {
+	resCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	_, relayErr := relayclient.Reserve(resCtx, n.Host, relayPeer)
+	if relayErr != nil {
+		return false
+	}
+
+	// Track successful reservation
+	n.relayReservationLock.Lock()
+	n.relayReservations[relayPeer.ID] = time.Now()
+	n.relayReservationLock.Unlock()
+
+	return true
+}
+
+// refreshRelayReservations periodically refreshes relay reservations before they expire
+// It refreshes reservations at 80% of the TTL to ensure they don't expire
+func (n *Node) refreshRelayReservations() {
+	// Refresh interval: 80% of TTL to ensure we refresh before expiration
+	refreshInterval := time.Duration(float64(n.relayReservationTTL) * 0.8)
+	if refreshInterval < time.Minute {
+		refreshInterval = time.Minute // Minimum 1 minute
+	}
+
+	ticker := time.NewTicker(refreshInterval)
+	defer ticker.Stop()
+
+	logger.Debugf("Starting relay reservation refresh with interval: %v (TTL: %v)", refreshInterval, n.relayReservationTTL)
+
+	for {
+		select {
+		case <-n.CTX.Done():
+			return
+		case <-ticker.C:
+			n.refreshAllRelayReservations()
+		}
+	}
+}
+
+// refreshAllRelayReservations refreshes all active relay reservations
+func (n *Node) refreshAllRelayReservations() {
+	n.relayReservationLock.RLock()
+	// Create a copy of the reservations map to avoid holding lock during refresh
+	reservations := make(map[peer.ID]time.Time, len(n.relayReservations))
+	for id, timestamp := range n.relayReservations {
+		reservations[id] = timestamp
+	}
+	n.relayReservationLock.RUnlock()
+
+	if len(reservations) == 0 {
+		return
+	}
+
+	logger.Debugf("Refreshing %d relay reservation(s)", len(reservations))
+
+	var wg sync.WaitGroup
+	for relayID := range reservations {
+		wg.Add(1)
+		go func(id peer.ID) {
+			defer wg.Done()
+
+			// Check if peer is still connected
+			if n.Host.Network().Connectedness(id) != network.Connected {
+				logger.Debugf("Relay peer %s is not connected, removing from reservations", id)
+				n.relayReservationLock.Lock()
+				delete(n.relayReservations, id)
+				n.relayReservationLock.Unlock()
+				return
+			}
+
+			// Get peer addresses
+			addrs := n.Host.Peerstore().Addrs(id)
+			if len(addrs) == 0 {
+				logger.Debugf("No addresses for relay peer %s, skipping refresh", id)
+				return
+			}
+
+			relayPeer := peer.AddrInfo{
+				ID:    id,
+				Addrs: addrs,
+			}
+
+			// Attempt to refresh reservation
+			if n.reserveRelaySlot(n.CTX, relayPeer) {
+				logger.Debugf("Successfully refreshed relay reservation with %s", id)
+			} else {
+				logger.Debugf("Failed to refresh relay reservation with %s, removing from active reservations", id)
+				n.relayReservationLock.Lock()
+				delete(n.relayReservations, id)
+				n.relayReservationLock.Unlock()
+			}
+		}(relayID)
+	}
+	wg.Wait()
 }
