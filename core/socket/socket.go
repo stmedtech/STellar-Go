@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"stellar/core/constant"
+	"stellar/frontend"
 	p2p_constant "stellar/p2p/constant"
 	"stellar/p2p/node"
 	"stellar/p2p/policy"
@@ -20,6 +22,7 @@ import (
 	"stellar/p2p/protocols/file"
 	"stellar/p2p/protocols/proxy"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -714,6 +717,185 @@ func (s *APIServer) UploadFile(c *gin.Context) {
 	})
 }
 
+// UploadFileRaw handles raw file upload from browser (multipart/form-data)
+func (s *APIServer) UploadFileRaw(c *gin.Context) {
+	deviceId := c.Param("deviceId")
+	remotePath := c.PostForm("remotePath")
+
+	if deviceId == "" {
+		logger.Warn("UploadFileRaw called with empty device ID")
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Device ID is required"})
+		return
+	}
+
+	if remotePath == "" {
+		logger.Warn("UploadFileRaw called with empty remote path")
+		c.JSON(http.StatusBadRequest, gin.H{"error": "remotePath is required"})
+		return
+	}
+
+	// Get the uploaded file
+	fileHeader, err := c.FormFile("file")
+	if err != nil {
+		logger.Warnf("UploadFileRaw: failed to get file from form: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("File is required: %v", err)})
+		return
+	}
+
+	device, err := s.Node.GetDevice(deviceId)
+	if err != nil {
+		logger.Warnf("Device not found for upload: %s, error: %v", deviceId, err)
+		c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("Device not found: %s", deviceId)})
+		return
+	}
+
+	// Create temporary file
+	tmpFile, err := os.CreateTemp("", "stellar-upload-*")
+	if err != nil {
+		logger.Errorf("Failed to create temp file: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create temporary file"})
+		return
+	}
+	tmpPath := tmpFile.Name()
+	defer func() {
+		tmpFile.Close()
+		if err := os.Remove(tmpPath); err != nil {
+			logger.Warnf("Failed to remove temp file %s: %v", tmpPath, err)
+		}
+	}()
+
+	// Save uploaded file to temp location
+	uploadedFile, err := fileHeader.Open()
+	if err != nil {
+		logger.Errorf("Failed to open uploaded file: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to process uploaded file"})
+		return
+	}
+	defer uploadedFile.Close()
+
+	if _, err := io.Copy(tmpFile, uploadedFile); err != nil {
+		logger.Errorf("Failed to copy uploaded file to temp: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save uploaded file"})
+		return
+	}
+	tmpFile.Close()
+
+	logger.Infof("Uploading file %s (size: %d) to device %s as %s", fileHeader.Filename, fileHeader.Size, deviceId, remotePath)
+	uploadErr := file.Upload(s.Node, device.ID, tmpPath, remotePath)
+	if uploadErr != nil {
+		logger.Errorf("Failed to upload file to device %s: %v", deviceId, uploadErr)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":      fmt.Sprintf("Upload failed: %v", uploadErr),
+			"device_id":  deviceId,
+			"remotePath": remotePath,
+		})
+		return
+	}
+
+	logger.Infof("Successfully uploaded file %s to device %s", fileHeader.Filename, deviceId)
+	c.JSON(http.StatusOK, gin.H{
+		"success":    true,
+		"filename":   fileHeader.Filename,
+		"size":       fileHeader.Size,
+		"remotePath": remotePath,
+		"device_id":  deviceId,
+	})
+}
+
+// DownloadFileRaw handles raw file download from device to browser
+func (s *APIServer) DownloadFileRaw(c *gin.Context) {
+	deviceId := c.Param("deviceId")
+	remotePath := c.Query("remotePath")
+
+	if deviceId == "" {
+		logger.Warn("DownloadFileRaw called with empty device ID")
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Device ID is required"})
+		return
+	}
+
+	if remotePath == "" {
+		logger.Warn("DownloadFileRaw called with empty remote path")
+		c.JSON(http.StatusBadRequest, gin.H{"error": "remotePath is required"})
+		return
+	}
+
+	device, err := s.Node.GetDevice(deviceId)
+	if err != nil {
+		logger.Warnf("Device not found for download: %s, error: %v", deviceId, err)
+		c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("Device not found: %s", deviceId)})
+		return
+	}
+
+	// Convert remotePath to relative path (remove leading slash if present)
+	// The file.Download expects a relative path from the dataDir root
+	relativePath := strings.TrimPrefix(remotePath, "/")
+	if relativePath == "" {
+		relativePath = remotePath
+	}
+
+	// Extract filename for Content-Disposition header
+	fileName := filepath.Base(remotePath)
+	if fileName == "" || fileName == "." || fileName == "/" {
+		fileName = "download"
+	}
+
+	// Create temporary file for download
+	tmpFile, err := os.CreateTemp("", "stellar-download-*")
+	if err != nil {
+		logger.Errorf("Failed to create temp file: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create temporary file"})
+		return
+	}
+	tmpPath := tmpFile.Name()
+	tmpFile.Close()
+	defer func() {
+		if err := os.Remove(tmpPath); err != nil {
+			logger.Warnf("Failed to remove temp file %s: %v", tmpPath, err)
+		}
+	}()
+
+	logger.Infof("Downloading file %s (path: %s) from device %s", fileName, relativePath, deviceId)
+	filePath, downloadErr := file.Download(s.Node, device.ID, relativePath, tmpPath)
+	if downloadErr != nil {
+		logger.Errorf("Failed to download file %s from device %s: %v", fileName, deviceId, downloadErr)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":       fmt.Sprintf("Download failed: %v", downloadErr),
+			"device_id":   deviceId,
+			"remote_path": remotePath,
+		})
+		return
+	}
+
+	// Open the downloaded file and stream it to client
+	downloadedFile, err := os.Open(filePath)
+	if err != nil {
+		logger.Errorf("Failed to open downloaded file %s: %v", filePath, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read downloaded file"})
+		return
+	}
+	defer downloadedFile.Close()
+
+	fileInfo, err := downloadedFile.Stat()
+	if err != nil {
+		logger.Errorf("Failed to stat downloaded file %s: %v", filePath, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get file information"})
+		return
+	}
+
+	// Set headers for file download
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%q", fileName))
+	c.Header("Content-Type", "application/octet-stream")
+	c.Header("Content-Length", fmt.Sprintf("%d", fileInfo.Size()))
+
+	// Use Gin's DataFromReader for proper streaming
+	// This ensures the file is streamed correctly in both Docker and native environments
+	c.DataFromReader(http.StatusOK, fileInfo.Size(), "application/octet-stream", downloadedFile, map[string]string{
+		"Content-Disposition": fmt.Sprintf("attachment; filename=%q", fileName),
+	})
+
+	logger.Infof("Successfully downloaded and streamed file %s from device %s", fileName, deviceId)
+}
+
 // Proxy Protocol Endpoints
 func (s *APIServer) CreateProxy(c *gin.Context) {
 	type ProxyRequest struct {
@@ -798,6 +980,119 @@ func (s *APIServer) Start() {
 		s.computeManager = NewComputeManager()
 	}
 
+	// Register frontend routes FIRST (before API routes)
+	// This ensures the / route is available
+	// Fallback HTML content when frontend is not available
+	fallbackHTML := `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stellar - Frontend Not Available</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #333;
+        }
+        .container {
+            background: white;
+            padding: 2rem;
+            border-radius: 10px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            text-align: center;
+            max-width: 500px;
+        }
+        h1 {
+            margin-top: 0;
+            color: #667eea;
+        }
+        p {
+            color: #666;
+            line-height: 1.6;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Frontend Module Not Available</h1>
+        <p>The frontend module was not built or embedded in this build.</p>
+        <p>API endpoints are still available. You can access the API at:</p>
+        <ul style="text-align: left; display: inline-block;">
+            <li><code>/health</code> - Health check</li>
+            <li><code>/node</code> - Node information</li>
+            <li><code>/devices</code> - Device management</li>
+        </ul>
+    </div>
+</body>
+</html>`
+
+	// Helper function to serve index.html or fallback
+	serveIndexOrFallback := func(c *gin.Context, staticFS fs.FS) {
+		if staticFS != nil {
+			indexFile, err := fs.ReadFile(staticFS, "index.html")
+			if err == nil && len(indexFile) > 0 {
+				c.Data(http.StatusOK, "text/html; charset=utf-8", indexFile)
+				return
+			}
+			// Fallback: try reading directly
+			indexFile, err = frontend.StaticFiles.ReadFile("dist/index.html")
+			if err == nil && len(indexFile) > 0 {
+				c.Data(http.StatusOK, "text/html; charset=utf-8", indexFile)
+				return
+			}
+		}
+		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(fallbackHTML))
+	}
+
+	// Helper function to get content type from file path
+	getContentType := func(filePath string) string {
+		if strings.HasSuffix(filePath, ".js") {
+			return "application/javascript"
+		} else if strings.HasSuffix(filePath, ".css") {
+			return "text/css"
+		} else if strings.HasSuffix(filePath, ".json") {
+			return "application/json"
+		} else if strings.HasSuffix(filePath, ".html") {
+			return "text/html; charset=utf-8"
+		} else if strings.HasSuffix(filePath, ".png") {
+			return "image/png"
+		} else if strings.HasSuffix(filePath, ".jpg") || strings.HasSuffix(filePath, ".jpeg") {
+			return "image/jpeg"
+		} else if strings.HasSuffix(filePath, ".svg") {
+			return "image/svg+xml"
+		} else if strings.HasSuffix(filePath, ".ico") {
+			return "image/x-icon"
+		}
+		return "application/octet-stream"
+	}
+
+	// Try to load static files
+	var staticFS fs.FS
+	staticFS, err := fs.Sub(frontend.StaticFiles, "dist")
+	if err == nil {
+		// Verify files are actually embedded
+		_, testErr := fs.ReadFile(staticFS, "index.html")
+		if testErr == nil {
+			logger.Infof("Frontend static files embedded successfully")
+		} else {
+			logger.Warnf("Frontend files embedded but index.html not accessible: %v", testErr)
+			staticFS = nil
+		}
+	} else {
+		logger.Warnf("Failed to create static filesystem: %v - frontend will not be available", err)
+		staticFS = nil
+	}
+
+	// ============================================================================
+	// STEP 1: Register ALL API routes FIRST (highest priority)
+	// ============================================================================
+
 	// Health and node endpoints
 	server.GET("/health", s.GetHealth)
 	server.GET("/node", s.GetNodeInfo)
@@ -816,6 +1111,9 @@ func (s *APIServer) Start() {
 	server.GET("/devices/:deviceId/files", s.ListFiles)
 	server.GET("/devices/:deviceId/files/download", s.DownloadFile)
 	server.POST("/devices/:deviceId/files/upload", s.UploadFile)
+	// Raw file upload/download endpoints (for browser file uploads)
+	server.POST("/devices/:deviceId/files/upload/raw", s.UploadFileRaw)
+	server.GET("/devices/:deviceId/files/download/raw", s.DownloadFileRaw)
 
 	// Compute protocol endpoints
 	server.POST("/devices/:deviceId/compute/execute", s.ExecuteCommand)
@@ -843,6 +1141,53 @@ func (s *APIServer) Start() {
 	server.GET("/policy/whitelist", s.GetPolicyWhiteList)
 	server.POST("/policy/whitelist", s.AddPolicyWhiteList)
 	server.DELETE("/policy/whitelist", s.RemovePolicyWhiteList)
+
+	// ============================================================================
+	// STEP 2: Handle root path exactly - serve index.html
+	// ============================================================================
+	server.GET("/", func(c *gin.Context) {
+		serveIndexOrFallback(c, staticFS)
+	})
+
+	// ============================================================================
+	// STEP 3: Handle all other paths (NoRoute)
+	// Priority: Try staticFS first, then index.html for SPA, then 404
+	// ============================================================================
+	server.NoRoute(func(c *gin.Context) {
+		path := c.Request.URL.Path
+
+		// Skip if it's already handled by API routes (shouldn't happen, but safety check)
+		if strings.HasPrefix(path, "/health") ||
+			strings.HasPrefix(path, "/node") ||
+			strings.HasPrefix(path, "/devices") ||
+			strings.HasPrefix(path, "/proxy") ||
+			strings.HasPrefix(path, "/policy") ||
+			strings.HasPrefix(path, "/connect") {
+			c.Status(http.StatusNotFound)
+			return
+		}
+
+		// Try to find file in staticFS (supports assets in root path)
+		if staticFS != nil {
+			// Remove leading slash for filesystem path
+			fsPath := strings.TrimPrefix(path, "/")
+			if fsPath == "" {
+				fsPath = "index.html"
+			}
+
+			fileContent, err := fs.ReadFile(staticFS, fsPath)
+			if err == nil && len(fileContent) > 0 {
+				// Found file in staticFS, serve it
+				contentType := getContentType(fsPath)
+				c.Data(http.StatusOK, contentType, fileContent)
+				return
+			}
+		}
+
+		// File not found in staticFS, serve index.html for SPA routing
+		// This handles client-side routes like /app/dashboard, /app/devices, etc.
+		serveIndexOrFallback(c, staticFS)
+	})
 
 	s.server = server
 }

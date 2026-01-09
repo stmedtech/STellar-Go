@@ -15,6 +15,10 @@ GOGET=$(GOCMD) get
 GOMOD=$(GOCMD) mod
 GOLINT=golangci-lint
 
+# Frontend build directory
+FRONTEND_DIR=frontend
+FRONTEND_DIST=$(FRONTEND_DIR)/dist
+
 # Build flags
 LDFLAGS=-ldflags "-X main.Version=$(shell git describe --tags --always --dirty) -X main.BuildTime=$(shell date -u '+%Y-%m-%d_%H:%M:%S')"
 
@@ -24,11 +28,29 @@ LDFLAGS=-ldflags "-X main.Version=$(shell git describe --tags --always --dirty) 
 all: clean build
 
 # Build the application
-build:
+build: build-frontend
 	@echo "Building $(BINARY_NAME)..."
 	@mkdir -p $(BUILD_DIR)
 	$(GOBUILD) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) ./cmd/stellar
 	@echo "Build complete: $(BUILD_DIR)/$(BINARY_NAME)"
+
+# Build frontend (optional - will not fail the build if frontend build fails)
+build-frontend:
+	@echo "Building frontend (optional)..."
+	@mkdir -p $(FRONTEND_DIST)
+	@if [ -d "$(FRONTEND_DIR)" ] && [ -f "$(FRONTEND_DIR)/package.json" ]; then \
+		if command -v npm >/dev/null 2>&1; then \
+			cd $(FRONTEND_DIR) && npm install && npm run build || echo "Warning: Frontend build failed, continuing without frontend..."; \
+		else \
+			echo "Warning: npm not found, skipping frontend build"; \
+		fi \
+	else \
+		echo "Frontend directory not found or package.json missing, skipping frontend build"; \
+	fi
+	@if [ ! -f "$(FRONTEND_DIST)/index.html" ]; then \
+		echo "Creating placeholder file for embed..."; \
+		touch $(FRONTEND_DIST)/index.html; \
+	fi
 
 # Clean build artifacts
 clean:

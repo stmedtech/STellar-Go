@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
@@ -2461,4 +2462,134 @@ func TestRunCompute_Integration_OperationLifecycle(t *testing.T) {
 	w = httptest.NewRecorder()
 	apiServer.server.ServeHTTP(w, req)
 	require.Equal(t, http.StatusNotFound, w.Code)
+}
+
+// Test UploadFileRaw endpoint
+func TestAPIServerUploadFileRaw(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	apiServer := &APIServer{}
+	apiServer.Start()
+
+	// Create a test file content
+	testContent := []byte("This is a test file content for raw upload")
+	testFileName := "test_upload.txt"
+	remotePath := "/tmp/test_upload.txt"
+
+	tests := []struct {
+		name           string
+		deviceID       string
+		remotePath     string
+		fileContent    []byte
+		fileName       string
+		expectedStatus int
+	}{
+		{
+			name:           "valid upload with file",
+			deviceID:       "test-device-id",
+			remotePath:     remotePath,
+			fileContent:    testContent,
+			fileName:       testFileName,
+			expectedStatus: http.StatusInternalServerError, // Will fail because Node is nil
+		},
+		{
+			name:           "empty device ID",
+			deviceID:       "",
+			remotePath:     remotePath,
+			fileContent:    testContent,
+			fileName:       testFileName,
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name:           "empty remote path",
+			deviceID:       "test-device-id",
+			remotePath:     "",
+			fileContent:    testContent,
+			fileName:       testFileName,
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name:           "missing file",
+			deviceID:       "test-device-id",
+			remotePath:     remotePath,
+			fileContent:    nil,
+			fileName:       "",
+			expectedStatus: http.StatusBadRequest,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create multipart form data
+			var body bytes.Buffer
+			writer := multipart.NewWriter(&body)
+
+			// Add remotePath field
+			if tt.remotePath != "" {
+				writer.WriteField("remotePath", tt.remotePath)
+			}
+
+			// Add file if provided
+			if tt.fileContent != nil && tt.fileName != "" {
+				part, err := writer.CreateFormFile("file", tt.fileName)
+				require.NoError(t, err)
+				_, err = part.Write(tt.fileContent)
+				require.NoError(t, err)
+			}
+
+			writer.Close()
+
+			req, _ := http.NewRequest("POST", fmt.Sprintf("/devices/%s/files/upload/raw", tt.deviceID), &body)
+			req.Header.Set("Content-Type", writer.FormDataContentType())
+			w := httptest.NewRecorder()
+
+			apiServer.server.ServeHTTP(w, req)
+			assert.Equal(t, tt.expectedStatus, w.Code)
+		})
+	}
+}
+
+// Test DownloadFileRaw endpoint
+func TestAPIServerDownloadFileRaw(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	apiServer := &APIServer{}
+	apiServer.Start()
+
+	tests := []struct {
+		name           string
+		deviceID       string
+		remotePath     string
+		expectedStatus int
+	}{
+		{
+			name:           "valid download request",
+			deviceID:       "test-device-id",
+			remotePath:     "/home/user/test_file.txt",
+			expectedStatus: http.StatusInternalServerError, // Will fail because Node is nil
+		},
+		{
+			name:           "empty device ID",
+			deviceID:       "",
+			remotePath:     "/home/user/test_file.txt",
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name:           "empty remote path",
+			deviceID:       "test-device-id",
+			remotePath:     "",
+			expectedStatus: http.StatusBadRequest,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			url := fmt.Sprintf("/devices/%s/files/download/raw?remotePath=%s", tt.deviceID, tt.remotePath)
+			req, _ := http.NewRequest("GET", url, nil)
+			w := httptest.NewRecorder()
+
+			apiServer.server.ServeHTTP(w, req)
+			assert.Equal(t, tt.expectedStatus, w.Code)
+		})
+	}
 }
