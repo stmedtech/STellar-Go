@@ -7,6 +7,60 @@ import (
 	"strings"
 )
 
+// GetStellarExecutableDir returns the directory containing the stellar executable
+// This is a standalone function that can be used without a Server instance
+func GetStellarExecutableDir() string {
+	execPath, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+
+	execDir := filepath.Dir(execPath)
+	// Resolve symlinks to get the actual directory
+	if resolvedPath, err := filepath.EvalSymlinks(execPath); err == nil {
+		execDir = filepath.Dir(resolvedPath)
+	}
+
+	// Verify the directory exists and is accessible
+	if _, err := os.Stat(execDir); err != nil {
+		return ""
+	}
+
+	return execDir
+}
+
+// PrepareExecutionEnvironment prepares environment variables for command execution
+// It adds the stellar executable directory to PATH
+// This is a standalone function that can be used without a Server instance
+func PrepareExecutionEnvironment(userEnv map[string]string) map[string]string {
+	// Start with user-provided environment
+	env := make(map[string]string)
+	for k, v := range userEnv {
+		env[k] = v
+	}
+
+	// Get stellar executable directory and add it to PATH
+	stellarExecDir := GetStellarExecutableDir()
+	if stellarExecDir == "" {
+		return env
+	}
+
+	// Get existing PATH from user env
+	existingPath := env["PATH"]
+	if existingPath == "" {
+		existingPath = env[pathVarName()] // Windows case
+	}
+
+	// Merge stellar directory with existing PATH
+	newPath := mergePaths([]string{stellarExecDir}, existingPath)
+
+	// Set PATH in environment (set both for cross-platform compatibility)
+	env["PATH"] = newPath
+	env[pathVarName()] = newPath
+
+	return env
+}
+
 // pathVarName returns the PATH environment variable name for the current OS
 func pathVarName() string {
 	if runtime.GOOS == "windows" {

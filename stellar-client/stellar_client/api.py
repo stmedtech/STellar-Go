@@ -26,10 +26,10 @@ class APIClient:
         Args:
             path: API endpoint path
             params: Query parameters
-            raw: If True, return raw text/bytes instead of parsing JSON
+            raw: If True, return raw text instead of parsing JSON
             
         Returns:
-            Response data (dict if JSON, str/bytes if raw)
+            Response data (dict if JSON, str if raw)
             
         Raises:
             ConnectionError: If connection fails
@@ -42,13 +42,16 @@ class APIClient:
             raise ConnectionError(f"GET {path} failed: {e}") from e
     
     def post(self, path: str, json_data: Optional[Dict[str, Any]] = None, 
-             data: Optional[Dict[str, Any]] = None) -> Any:
+             data: Optional[Dict[str, Any]] = None, raw_data: Optional[bytes] = None,
+             files: Optional[Dict[str, Any]] = None) -> Any:
         """Make POST request.
         
         Args:
             path: API endpoint path
             json_data: JSON payload
             data: Form data payload
+            raw_data: Raw bytes payload (for stdin, file uploads, etc.)
+            files: Files for multipart/form-data uploads (dict of {field_name: file_object})
             
         Returns:
             Response data
@@ -57,9 +60,50 @@ class APIClient:
             ConnectionError: If connection fails
         """
         try:
+            if raw_data is not None:
+                # Use internal method to send raw data
+                response = self._client.request_with_retry("POST", path, raw_data=raw_data)
+                try:
+                    if response.status_code == 204 or not response.content:
+                        return {}
+                    return response.json()
+                except ValueError:
+                    if response.text:
+                        return {"raw": response.text}
+                    return {}
+            if files is not None:
+                # Use internal method for multipart uploads
+                response = self._client.request_with_retry("POST", path, files=files, data=data)
+                try:
+                    if response.status_code == 204 or not response.content:
+                        return {}
+                    return response.json()
+                except ValueError:
+                    if response.text:
+                        return {"raw": response.text}
+                    return {}
             return self._client.post(path, json_data=json_data, data=data)
         except Exception as e:
             raise ConnectionError(f"POST {path} failed: {e}") from e
+    
+    def get_raw_bytes(self, path: str, params: Optional[Dict[str, Any]] = None) -> bytes:
+        """Make GET request and return raw bytes (for file downloads).
+        
+        Args:
+            path: API endpoint path
+            params: Query parameters
+            
+        Returns:
+            Raw bytes response
+            
+        Raises:
+            ConnectionError: If connection fails
+        """
+        try:
+            response = self._client.request_with_retry("GET", path, params=params)
+            return response.content
+        except Exception as e:
+            raise ConnectionError(f"GET {path} failed: {e}") from e
     
     def delete(self, path: str, params: Optional[Dict[str, Any]] = None, 
                data: Optional[Dict[str, Any]] = None) -> Any:

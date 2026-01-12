@@ -208,6 +208,7 @@ class UnixSocketClient:
         json_data: Optional[Dict[str, Any]] = None,
         data: Optional[Dict[str, Any]] = None,
         raw_data: Optional[bytes] = None,
+        files: Optional[Dict[str, Any]] = None,
     ) -> requests.Response:
         """Make HTTP request to the Unix socket.
         
@@ -218,6 +219,7 @@ class UnixSocketClient:
             json_data: JSON payload
             data: Form data payload
             raw_data: Raw bytes payload
+            files: Files for multipart/form-data uploads
         """
         # Ensure endpoint starts with / and base_url doesn't end with /
         base = self.base_url.rstrip('/')
@@ -225,16 +227,26 @@ class UnixSocketClient:
         url = f"{base}{endpoint}"
         
         try:
-            # If raw_data is provided, send it as raw bytes
             # Use a tuple for timeout: (connect_timeout, read_timeout)
             # This ensures both connection and read operations respect the timeout
             timeout_tuple = (self.timeout, self.timeout)
+            
             if raw_data is not None:
                 response = self.session.request(
                     method=method,
                     url=url,
                     params=params,
                     data=raw_data,
+                    timeout=timeout_tuple,
+                )
+            elif files is not None:
+                # Multipart/form-data upload
+                response = self.session.request(
+                    method=method,
+                    url=url,
+                    params=params,
+                    files=files,
+                    data=data,
                     timeout=timeout_tuple,
                 )
             else:
@@ -258,6 +270,7 @@ class UnixSocketClient:
         method: str,
         endpoint: str,
         raw_data: Optional[bytes] = None,
+        files: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> requests.Response:
         """Make HTTP request with retry logic and circuit breaker.
@@ -266,11 +279,12 @@ class UnixSocketClient:
             method: HTTP method
             endpoint: API endpoint path
             raw_data: Raw bytes payload
+            files: Files for multipart/form-data uploads
             **kwargs: Additional arguments passed to _make_request
         """
         def _make_request_with_check():
             self._ensure_connection()
-            return self._make_request(method, endpoint, raw_data=raw_data, **kwargs)
+            return self._make_request(method, endpoint, raw_data=raw_data, files=files, **kwargs)
             
         return self.circuit_breaker.call(
             self.retry_policy.execute_with_retry,
@@ -321,6 +335,15 @@ class UnixSocketClient:
         """Make GET request and return raw text."""
         response = self.request_with_retry("GET", endpoint, params=params)
         return response.text
+    
+    def get_raw_bytes(
+        self,
+        endpoint: str,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> bytes:
+        """Make GET request and return raw bytes (for binary file downloads)."""
+        response = self.request_with_retry("GET", endpoint, params=params)
+        return response.content
         
     def post(
         self,

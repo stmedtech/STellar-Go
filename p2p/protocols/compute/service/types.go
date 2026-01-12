@@ -27,6 +27,7 @@ type RawExecution struct {
 	Stdin    io.WriteCloser     // Write to process stdin
 	Stdout   io.ReadCloser      // Read from process stdout
 	Stderr   io.ReadCloser      // Read from process stderr
+	Log      io.ReadCloser      // Read merged logs (stdout + stderr with timestamps)
 	Done     <-chan error       // Signals completion (error or nil)
 	ExitCode <-chan int         // Exit code when done
 	Cancel   context.CancelFunc // Cancel function to stop execution

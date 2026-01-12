@@ -27,13 +27,16 @@ func GetSystemInformation() (SystemInformation, error) {
 	if err != nil {
 		return info, err
 	}
-	info.CPU = cpuStat[0].ModelName
-
-	gpus, err := getGpus()
-	if err != nil {
-		return info, err
+	if len(cpuStat) > 0 && cpuStat[0].ModelName != "" {
+		info.CPU = cpuStat[0].ModelName
 	}
-	info.GPU = gpus
+
+	// Get GPUs - don't fail if GPU detection fails (e.g., in Docker)
+	gpus, err := getGpus()
+	if err == nil {
+		info.GPU = gpus
+	}
+	// Continue even if GPU detection fails
 
 	hostStat, err := host.Info()
 	if err != nil {
@@ -50,11 +53,29 @@ func getGpus() ([]string, error) {
 
 	gpu, err := ghw.GPU()
 	if err != nil {
-		return gpus, err
+		// Return empty list instead of error to allow system info to be collected
+		// even when GPU detection fails (e.g., in Docker containers)
+		return gpus, nil
+	}
+
+	if gpu == nil {
+		return gpus, nil
 	}
 
 	for _, card := range gpu.GraphicsCards {
-		gpus = append(gpus, card.DeviceInfo.Product.Name)
+		// Safely access nested fields with nil checks
+		if card == nil {
+			continue
+		}
+		if card.DeviceInfo == nil {
+			continue
+		}
+		if card.DeviceInfo.Product == nil {
+			continue
+		}
+		if card.DeviceInfo.Product.Name != "" {
+			gpus = append(gpus, card.DeviceInfo.Product.Name)
+		}
 	}
 
 	return gpus, nil
