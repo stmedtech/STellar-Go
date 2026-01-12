@@ -178,7 +178,7 @@ func main() {
 	args := os.Args
 	subCommand := ""
 	if len(os.Args) < 2 {
-		logger.Warn("expected 'key', 'node', 'gui', 'conda' subcommands")
+		logger.Warn("expected 'key', 'node', 'conda' subcommands")
 		// os.Exit(1)
 		subCommand = "node"
 		args = os.Args[1:]
@@ -189,7 +189,7 @@ func main() {
 
 	// Set up log file before doing anything else
 	// This redirects all stdout, stderr, and logs to both terminal (primary) and file (secondary)
-	if subCommand == "node" || subCommand == "gui" {
+	if subCommand == "node" {
 		if err := setupLogFile(); err != nil {
 			// If log file setup fails, we can't use logger yet, so use fmt to stderr
 			fmt.Fprintf(os.Stderr, "Failed to set up log file: %v, continuing with console logging only\n", err)
@@ -210,8 +210,6 @@ func main() {
 		keyCommand(args)
 	case "node":
 		nodeCommand(args)
-	case "gui":
-		guiCommand(args)
 	case "conda":
 		condaCommand(args)
 	default:
