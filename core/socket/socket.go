@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"stellar/core/constant"
 	"stellar/frontend"
@@ -24,6 +25,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	golog "github.com/ipfs/go-log/v2"
@@ -365,13 +367,50 @@ func (s *APIServer) StartSocket() {
 		logger.Warnf("Error while listening", err)
 		return
 	}
-	defer os.Remove(socketPath)
+
+	// Ensure socket file is always cleaned up, no matter what happens
+	// This includes normal exit, panic, crash, or signal termination
+	cleanupSocket := func() {
+		if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
+			logger.Warnf("Failed to remove socket file %s: %v", socketPath, err)
+		}
+	}
+
+	// Defer cleanup - will run on normal return
+	defer cleanupSocket()
+
+	// Handle panics to ensure cleanup even on panic
+	defer func() {
+		if r := recover(); r != nil {
+			cleanupSocket()
+			if listener != nil {
+				listener.Close()
+			}
+			panic(r) // Re-panic after cleanup
+		}
+	}()
+
+	// Handle termination signals to ensure graceful shutdown and cleanup
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
+	go func() {
+		<-sigChan
+		logger.Infof("Received termination signal, shutting down socket server...")
+		// Clean up socket file explicitly (os.Exit bypasses defers)
+		cleanupSocket()
+		// Close listener to cause http.Serve to return
+		if listener != nil {
+			listener.Close()
+		}
+		// Exit the program
+		os.Exit(0)
+	}()
 
 	logger.Infof("Stellar API server started on %s", socketPath)
 
+	// Serve will block until listener is closed
+	// When listener closes (via signal or error), defer will clean up socket file
 	http.Serve(listener, s.server)
-
-	defer listener.Close()
 }
 
 func (s *APIServer) StartServer(port uint64) {

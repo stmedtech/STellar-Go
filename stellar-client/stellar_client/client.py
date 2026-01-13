@@ -37,7 +37,8 @@ class StellarClient:
         """Initialize Stellar client.
         
         Args:
-            socket_path: Path to Unix socket (uses default if None)
+            socket_path: Path to Unix socket or HTTP URL. If None, uses auto-resolution
+                         (STELLAR_NODE_URL -> Unix socket -> http://127.0.0.1:1524)
             timeout: Request timeout in seconds
         """
         self.api = APIClient(socket_path, timeout)
@@ -143,8 +144,16 @@ def from_env(socket_path: Optional[str] = None, timeout: int = 30) -> StellarCli
     
     This is the recommended way to create a client, similar to docker.from_env().
     
+    Connection resolution priority (when socket_path is not provided):
+    1. STELLAR_NODE_URL environment variable
+    2. Default Unix socket path (if exists)
+    3. HTTP fallback: http://127.0.0.1:1524
+    
+    If socket_path is explicitly provided, it bypasses all automatic resolution
+    and is used directly (can be either a Unix socket path or HTTP URL).
+    
     Args:
-        socket_path: Path to Unix socket (uses default if None)
+        socket_path: Path to Unix socket or HTTP URL. If None, uses auto-resolution.
         timeout: Request timeout in seconds
         
     Returns:
@@ -154,5 +163,11 @@ def from_env(socket_path: Optional[str] = None, timeout: int = 30) -> StellarCli
         >>> import stellar_client
         >>> client = stellar_client.from_env()
         >>> devices = client.devices.list()
+        
+        >>> # Explicit socket path
+        >>> client = stellar_client.from_env(socket_path="/path/to/socket")
+        
+        >>> # Explicit URL
+        >>> client = stellar_client.from_env(socket_path="http://127.0.0.1:1524")
     """
     return StellarClient(socket_path=socket_path, timeout=timeout)
