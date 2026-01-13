@@ -101,20 +101,6 @@ func TestMainFunction(t *testing.T) {
 							// Command timed out - this is expected
 							t.Logf("Node command timed out as expected")
 						}
-					case "gui":
-						// Use a timeout for gui as it may hang
-						done := make(chan bool)
-						go func() {
-							guiCommand(tt.args[1:])
-							done <- true
-						}()
-						select {
-						case <-done:
-							// Command completed
-						case <-time.After(2 * time.Second):
-							// Command timed out - this is expected
-							t.Logf("GUI command timed out as expected")
-						}
 					case "test":
 						// Skip test command as it requires proper device configuration
 						t.Skip("Skipping test command - requires proper device configuration")
@@ -170,9 +156,10 @@ func TestCommandFunctions(t *testing.T) {
 		name     string
 		function func(args []string)
 	}{
+		{"configCommand", configCommand},
+		{"condaCommand", condaCommand},
 		{"keyCommand", keyCommand},
 		{"nodeCommand", nodeCommand},
-		{"guiCommand", guiCommand},
 	}
 
 	for _, tt := range tests {

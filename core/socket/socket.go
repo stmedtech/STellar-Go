@@ -892,6 +892,15 @@ func (s *APIServer) ExecuteCommand(c *gin.Context) {
 	hostNodeID := s.Node.Host.ID().String()
 	isLocal := deviceID == hostNodeID
 
+	// Validate device (allows host node deviceId for local execution)
+	if !isLocal {
+		_, err := s.validateDevice(deviceID)
+		if err != nil {
+			s.errorResponse(c, http.StatusNotFound, fmt.Sprintf("Device not found: %s", deviceID), nil)
+			return
+		}
+	}
+
 	var req struct {
 		Command    string            `json:"command" binding:"required"`
 		Args       []string          `json:"args,omitempty"`
@@ -1090,17 +1099,23 @@ func (s *APIServer) monitorRunCompletion(run *ComputeRun) {
 }
 
 // ListComputeRuns lists all compute operations for a device
+// Allows access to command history even if device is no longer in active list
 func (s *APIServer) ListComputeRuns(c *gin.Context) {
 	deviceID := c.Param("deviceId")
 
-	// Validate device (allows host node deviceId)
-	_, err := s.validateDevice(deviceID)
-	if err != nil {
-		s.errorResponse(c, http.StatusNotFound, fmt.Sprintf("Device not found: %s", deviceID), nil)
-		return
+	// Check if there are any runs for this device first
+	// This allows access to command history even if device is disconnected
+	runs := s.computeManager.ListRuns(deviceID)
+
+	// If no runs exist, validate device to provide better error message
+	if len(runs) == 0 {
+		_, err := s.validateDevice(deviceID)
+		if err != nil {
+			s.errorResponse(c, http.StatusNotFound, fmt.Sprintf("Device not found: %s", deviceID), nil)
+			return
+		}
 	}
 
-	runs := s.computeManager.ListRuns(deviceID)
 	runList := make([]gin.H, 0, len(runs))
 
 	for _, run := range runs {
@@ -1130,15 +1145,18 @@ func (s *APIServer) ListComputeRuns(c *gin.Context) {
 }
 
 // GetComputeRun gets detailed information about a specific compute run
+// Allows access to command history even if device is no longer in active list
 func (s *APIServer) GetComputeRun(c *gin.Context) {
 	deviceID := c.Param("deviceId")
 	runID := c.Param("runId")
 
+	// Check if run exists first - allows access even if device is disconnected
 	run, exists := s.computeManager.GetRun(runID)
 	if !exists || run.DeviceID != deviceID {
 		s.errorResponse(c, http.StatusNotFound, "Run not found", nil)
 		return
 	}
+	// No device validation needed - if run exists, allow access to history
 
 	runData := gin.H{
 		"id":          run.ID,
@@ -1221,15 +1239,18 @@ func writeLogEntry(logStream io.WriteCloser, runID, logType, data string) {
 }
 
 // CancelComputeRun cancels a running command execution
+// Note: Only works if device is still connected and run is still active
 func (s *APIServer) CancelComputeRun(c *gin.Context) {
 	deviceID := c.Param("deviceId")
 	runID := c.Param("runId")
 
+	// Check if run exists first
 	run, exists := s.computeManager.GetRun(runID)
 	if !exists || run.DeviceID != deviceID {
 		s.errorResponse(c, http.StatusNotFound, "Run not found", nil)
 		return
 	}
+	// Note: Cancel requires active execution handle, so device must be connected
 
 	if run.Status != "running" {
 		s.errorResponse(c, http.StatusBadRequest, fmt.Sprintf("Run is not running (status: %s)", run.Status), nil)
@@ -1254,16 +1275,18 @@ func (s *APIServer) CancelComputeRun(c *gin.Context) {
 }
 
 // DeleteComputeRun removes a compute run and cleans up all associated resources (including buffers)
+// Allows deletion of command history even if device is no longer in active list
 func (s *APIServer) DeleteComputeRun(c *gin.Context) {
 	deviceID := c.Param("deviceId")
 	runID := c.Param("runId")
 
-	// Verify run exists and belongs to device
+	// Check if run exists first - allows deletion even if device is disconnected
 	run, exists := s.computeManager.GetRun(runID)
 	if !exists || run.DeviceID != deviceID {
 		s.errorResponse(c, http.StatusNotFound, "Run not found", nil)
 		return
 	}
+	// No device validation needed - if run exists, allow deletion of history
 
 	// Remove from manager (this also calls Cleanup)
 	removed := s.computeManager.RemoveRun(runID)
@@ -1281,16 +1304,19 @@ func (s *APIServer) DeleteComputeRun(c *gin.Context) {
 // Streaming Endpoints
 
 // StreamStdout streams stdout from a compute operation using buffered output
+// Allows access to command history even if device is no longer in active list
 func (s *APIServer) StreamStdout(c *gin.Context) {
 	deviceID := c.Param("deviceId")
 	runID := c.Param("runId")
 	follow := c.DefaultQuery("follow", "false") == "true"
 
+	// Check if run exists first - allows access even if device is disconnected
 	run, exists := s.computeManager.GetRun(runID)
 	if !exists || run.DeviceID != deviceID {
 		s.errorResponse(c, http.StatusNotFound, "Run not found", nil)
 		return
 	}
+	// No device validation needed - if run exists, allow access to history
 
 	c.Header("Content-Type", "text/plain; charset=utf-8")
 
@@ -1322,16 +1348,19 @@ func (s *APIServer) StreamStdout(c *gin.Context) {
 }
 
 // StreamStderr streams stderr from a compute operation using buffered output
+// Allows access to command history even if device is no longer in active list
 func (s *APIServer) StreamStderr(c *gin.Context) {
 	deviceID := c.Param("deviceId")
 	runID := c.Param("runId")
 	follow := c.DefaultQuery("follow", "false") == "true"
 
+	// Check if run exists first - allows access even if device is disconnected
 	run, exists := s.computeManager.GetRun(runID)
 	if !exists || run.DeviceID != deviceID {
 		s.errorResponse(c, http.StatusNotFound, "Run not found", nil)
 		return
 	}
+	// No device validation needed - if run exists, allow access to history
 
 	c.Header("Content-Type", "text/plain; charset=utf-8")
 
@@ -1355,16 +1384,19 @@ func (s *APIServer) StreamStderr(c *gin.Context) {
 }
 
 // StreamLogs streams combined logs from a compute operation using buffered output
+// Allows access to command history even if device is no longer in active list
 func (s *APIServer) StreamLogs(c *gin.Context) {
 	deviceID := c.Param("deviceId")
 	runID := c.Param("runId")
 	follow := c.DefaultQuery("follow", "false") == "true"
 
+	// Check if run exists first - allows access even if device is disconnected
 	run, exists := s.computeManager.GetRun(runID)
 	if !exists || run.DeviceID != deviceID {
 		s.errorResponse(c, http.StatusNotFound, "Run not found", nil)
 		return
 	}
+	// No device validation needed - if run exists, allow access to history
 
 	c.Header("Content-Type", "application/json; charset=utf-8")
 

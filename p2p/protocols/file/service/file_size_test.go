@@ -209,6 +209,10 @@ func TestFileGetThresholdBoundary(t *testing.T) {
 			require.NoError(t, os.MkdirAll(filepath.Dir(serverPath), 0755))
 			require.NoError(t, copyFile(srcPath, serverPath))
 
+			// Wait for file to be fully written with correct size before attempting download
+			// This ensures file system has flushed and file is ready
+			waitForFileWithExactSize(t, serverPath, size, 2*time.Second)
+
 			destDir := t.TempDir()
 			destPath := filepath.Join(destDir, fmt.Sprintf("downloaded_%d.dat", size))
 			remotePath := filepath.Join("threshold", fmt.Sprintf("file_%d.dat", size))
@@ -217,6 +221,10 @@ func TestFileGetThresholdBoundary(t *testing.T) {
 			if err != nil {
 				t.Logf("Get failed for size %d: %v", size, err)
 				t.Logf("OS: %s, Arch: %s", runtime.GOOS, runtime.GOARCH)
+				// Log server file info for debugging
+				if serverInfo, statErr := os.Stat(serverPath); statErr == nil {
+					t.Logf("Server file size: %d bytes (expected %d)", serverInfo.Size(), size)
+				}
 			}
 			require.NoError(t, err, "Get failed for size %d", size)
 

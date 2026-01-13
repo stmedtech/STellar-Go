@@ -1,16 +1,13 @@
 version: '3.8'
 
 services:
-  conda-test:
+  test:
     build:
       context: .
       dockerfile: Dockerfile.test
     volumes:
       - .:/app
       - go-mod-cache:/go/pkg/mod
-    environment:
-      - IN_DOCKER=true
-      - CONDATEST_ENABLED=true
     command: go test -tags conda ./... -v -timeout 10m -parallel 1
 
 volumes:
