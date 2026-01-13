@@ -1,6 +1,7 @@
 package device
 
 import (
+	"stellar/core/config"
 	"stellar/core/protocols/compute"
 	"stellar/core/socket"
 	"stellar/p2p/node"
@@ -38,14 +39,48 @@ func (d *Device) GenerateKey(seed int64) {
 }
 
 func (d *Device) Init(listenHost string, listenPort uint64) {
-	n, nodeErr := node.NewNode(
-		listenHost,
-		listenPort,
-		d.opts...,
-	)
+	d.InitWithOptions(listenHost, listenPort, false, false, "", false)
+}
+
+func (d *Device) InitWithOptions(
+	listenHost string,
+	listenPort uint64,
+	bootstrapper bool,
+	relayNode bool,
+	b64privkey string,
+	debug bool,
+) {
+	// If b64privkey is provided, use it instead of opts
+	var n *node.Node
+	var nodeErr error
+	if b64privkey != "" {
+		n, nodeErr = node.NewNodeWithOptions(
+			listenHost,
+			listenPort,
+			bootstrapper,
+			relayNode,
+			b64privkey,
+			debug,
+			d.opts...,
+		)
+	} else {
+		n, nodeErr = node.NewNodeWithOptions(
+			listenHost,
+			listenPort,
+			bootstrapper,
+			relayNode,
+			"",
+			debug,
+			d.opts...,
+		)
+	}
 	if nodeErr != nil {
 		logger.Fatalln(nodeErr)
 	}
+
+	// Initialize file protocol data directory from config
+	cfg := config.GetInstance()
+	file.InitDataDir(cfg.DataDir)
 
 	echo.BindEchoStream(n)
 	file.BindFileStream(n)

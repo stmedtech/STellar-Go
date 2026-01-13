@@ -1,10 +1,10 @@
-# DCFL (Decentralized Federated Learning)
+# Stellar
 
-**DCFL** is a decentralized federated learning platform built with Go, leveraging libp2p for peer-to-peer communication and providing seamless integration with Python-based FL frameworks like Flower and NVFlare.
+**Stellar** is a decentralized platform built with Go, leveraging libp2p for peer-to-peer communication and providing seamless integration with Python-based frameworks.
 
 ## Overview
 
-DCFL enables distributed machine learning across multiple devices without requiring a central server. The platform uses a hybrid architecture combining Go for the decentralized networking layer and Python for the federated learning computations.
+Stellar enables distributed computing across multiple devices without requiring a central server. The platform uses a hybrid architecture combining Go for the decentralized networking layer and Python for computations.
 
 ### Key Features
 
@@ -48,7 +48,7 @@ DCFL enables distributed machine learning across multiple devices without requir
 
 ### CLI Commands
 
-The DCFL platform provides several CLI commands:
+The Stellar platform provides several CLI commands:
 
 #### Node Operations
 ```bash
@@ -68,10 +68,10 @@ The DCFL platform provides several CLI commands:
 #### Bootstrapper Operations
 ```bash
 # Start a bootstrap node
-./stellar bootstrapper --host 0.0.0.0 --port 4001
+./stellar node --bootstrapper --host 0.0.0.0 --port 4001
 
 # Start with relay functionality
-./stellar bootstrapper --relay --debug
+./stellar node --bootstrapper --relay --debug
 ```
 
 #### Key Management

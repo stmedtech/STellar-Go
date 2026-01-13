@@ -14,6 +14,8 @@ require (
 	github.com/prometheus/client_golang v1.22.0
 	github.com/schollz/progressbar/v3 v3.18.0
 	github.com/shirou/gopsutil v3.21.11+incompatible
+	github.com/stretchr/testify v1.10.0
+	golang.org/x/sync v0.14.0
 )
 
 require (
@@ -151,7 +153,6 @@ require (
 	github.com/spaolacci/murmur3 v1.1.0 // indirect
 	github.com/srwiley/oksvg v0.0.0-20221011165216-be6e8873101c // indirect
 	github.com/srwiley/rasterx v0.0.0-20220730225603-2ab79fcdd4ef // indirect
-	github.com/stretchr/testify v1.10.0 // indirect
 	github.com/tklauser/go-sysconf v0.3.15 // indirect
 	github.com/tklauser/numcpus v0.10.0 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
@@ -175,7 +176,6 @@ require (
 	golang.org/x/image v0.25.0 // indirect
 	golang.org/x/mod v0.24.0 // indirect
 	golang.org/x/net v0.40.0 // indirect
-	golang.org/x/sync v0.14.0 // indirect
 	golang.org/x/sys v0.33.0 // indirect
 	golang.org/x/term v0.32.0 // indirect
 	golang.org/x/text v0.25.0 // indirect

@@ -3,6 +3,8 @@ package policy
 import (
 	"fmt"
 
+	"stellar/core/config"
+
 	golog "github.com/ipfs/go-log/v2"
 
 	"github.com/libp2p/go-libp2p/core/network"
@@ -15,6 +17,14 @@ var logger = golog.Logger("stellar-p2p-policy")
 type ProtocolPolicy struct {
 	Enable    bool
 	WhiteList []string
+}
+
+// LoadFromConfig loads the whitelist directly from the config singleton
+// This should be called after the policy is initialized to ensure it has the latest whitelist from config
+func (p *ProtocolPolicy) LoadFromConfig() {
+	cfg := config.GetInstance()
+	p.WhiteList = make([]string, len(cfg.WhiteList))
+	copy(p.WhiteList, cfg.WhiteList)
 }
 
 func (p *ProtocolPolicy) Authenticate(peer peer.ID) bool {
@@ -72,6 +82,11 @@ func (p *ProtocolPolicy) AddWhiteList(deviceId string) (err error) {
 
 	p.WhiteList = append(p.WhiteList, deviceId)
 
+	// Auto-sync whitelist to config
+	if err := p.syncWhiteListToConfig(); err != nil {
+		logger.Warnf("Failed to sync whitelist to config: %v", err)
+	}
+
 	return
 }
 
@@ -95,5 +110,16 @@ func (p *ProtocolPolicy) RemoveWhiteList(deviceId string) (err error) {
 
 	p.WhiteList = RemoveIndex(p.WhiteList, index)
 
+	// Auto-sync whitelist to config
+	if err := p.syncWhiteListToConfig(); err != nil {
+		logger.Warnf("Failed to sync whitelist to config: %v", err)
+	}
+
 	return
+}
+
+// syncWhiteListToConfig syncs the whitelist to the config singleton
+func (p *ProtocolPolicy) syncWhiteListToConfig() error {
+	cfg := config.GetInstance()
+	return cfg.SyncWhiteList(p.WhiteList)
 }

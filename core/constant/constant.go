@@ -28,7 +28,7 @@ func StellarPath() (string, error) {
 		return "", fileErr
 	}
 
-	appDir := filepath.Join(homeDir, "Stellar")
+	appDir := filepath.Join(homeDir, "stellar")
 
 	return appDir, nil
 }

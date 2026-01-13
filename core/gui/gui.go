@@ -1,15 +1,25 @@
 package gui
 
 import (
+	"bufio"
+	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"maps"
 	"math"
 	"path/filepath"
 	"slices"
+	"stellar/core/config"
 	"stellar/core/constant"
 	"stellar/core/device"
-	"stellar/core/protocols/compute"
+	"stellar/core/utils"
+
+	// "stellar/core/device" // Temporarily unused (Phase 0 cleanup)
+	// "stellar/core/protocols/compute" // Temporarily disabled (Phase 0 cleanup)
 	"stellar/p2p/node"
+	p2p_compute "stellar/p2p/protocols/compute"
+	compute_service "stellar/p2p/protocols/compute/service"
 	"stellar/p2p/protocols/file"
 	"stellar/p2p/protocols/proxy"
 	"strconv"
@@ -25,7 +35,6 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/data/binding"
 	"fyne.io/fyne/v2/dialog"
-	"fyne.io/fyne/v2/storage"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 )
@@ -88,7 +97,7 @@ func (app *GUIApp) showErr(err error) {
 }
 
 func (app *GUIApp) deviceSelect() *widget.RadioGroup {
-	radio := widget.NewRadioGroup(slices.Sorted(maps.Keys(app.node.Devices)), func(value string) {})
+	radio := widget.NewRadioGroup(slices.Sorted(maps.Keys(app.node.Devices())), func(value string) {})
 	return radio
 }
 
@@ -218,24 +227,14 @@ func (app *GUIApp) initDevices() fyne.CanvasObject {
 				return nil
 			}
 
-			SEP := "/"
-
-			spts := strings.Split(path, SEP)
-			if len(spts) == 0 {
-				return nil
-			}
-
-			search := spts[0]
-			trailing := strings.Join(spts[1:], SEP)
-
-			for _, f := range fs {
-				if f.Filename == search {
-					if len(spts) == 1 {
-						return &f
-					}
-
-					if f.IsDir && len(spts) > 1 {
-						return findEntryRecur(trailing, f.Children)
+			for i := range fs {
+				entry := &fs[i]
+				if entry.FullName() == path {
+					return entry
+				}
+				if entry.IsDir {
+					if found := findEntryRecur(path, entry.Children); found != nil {
+						return found
 					}
 				}
 			}
@@ -314,7 +313,7 @@ func (app *GUIApp) initDevices() fyne.CanvasObject {
 				return
 			}
 
-			filePath, err := file.Download(app.node, device.ID, f.FullName(), file.DataDir)
+			filePath, err := file.Download(app.node, device.ID, f.FullName(), filepath.Join(file.DataDir, f.Filename))
 			if err != nil {
 				app.showErrWithWindow(err, w)
 				return
@@ -365,137 +364,276 @@ func (app *GUIApp) initDevices() fyne.CanvasObject {
 		fd.Show()
 	})
 
-	prepareCondaPython := widget.NewButton("Prepare Python Env", func() {
+	openTerminal := widget.NewButton("Terminal", func() {
 		deviceId, err := app.selectedDeviceId.Get()
-		if err != nil {
+		if err != nil || deviceId == "" {
 			return
 		}
-		if deviceId == "" {
-			return
-		}
-
-		device, err := app.node.GetDevice(deviceId)
+		dev, err := app.node.GetDevice(deviceId)
 		if err != nil {
 			app.showErr(err)
 			return
 		}
-
-		w := app.a.NewWindow(fmt.Sprintf("Prepare Python Environment for device %v", deviceId))
-		w.Resize(fyne.NewSize(800, 600))
-
-		envName := widget.NewEntry()
-		envVersion := widget.NewEntry()
-		envVersion.Text = "3.11"
-
-		form := &widget.Form{
-			Items: []*widget.FormItem{
-				{Text: "Environment Name", Widget: envName},
-				{Text: "Environment Version", Widget: envVersion},
-			},
-			OnSubmit: func() {
-				fd := dialog.NewFileOpen(func(reader fyne.URIReadCloser, err error) {
-					if err != nil {
-						app.showErrWithWindow(err, w)
-						return
-					}
-					if reader == nil {
-						return
-					}
-
-					fpath := reader.URI().Path()
-					form := compute.CondaPythonPreparation{
-						Env:         envName.Text,
-						Version:     envVersion.Text,
-						EnvYamlPath: fpath,
-					}
-					envPath, envErr := compute.PrepareCondaPython(app.node, device.ID, form)
-					if envErr != nil {
-						app.showErrWithWindow(envErr, w)
-						return
-					}
-
-					dialog.ShowInformation("Python Environment", envPath, w)
-				}, w)
-				fd.SetFilter(storage.NewExtensionFileFilter([]string{".yml", ".yaml"}))
-				fd.Show()
-			},
-		}
-
-		w.SetContent(form)
-		w.Show()
+		app.openTerminalWindow(dev.ID, deviceId)
 	})
 
-	executeCondaPythonScript := widget.NewButton("Execute Python Script", func() {
-		deviceId, err := app.selectedDeviceId.Get()
-		if err != nil {
-			return
-		}
-		if deviceId == "" {
-			return
-		}
-
-		device, err := app.node.GetDevice(deviceId)
-		if err != nil {
-			app.showErr(err)
-			return
-		}
-
-		w := app.a.NewWindow(fmt.Sprintf("Execute Python Script with device %v", deviceId))
-		w.Resize(fyne.NewSize(800, 600))
-
-		envs, err := compute.ListCondaPythonEnvs(app.node, device.ID)
-		if err != nil {
-			app.showErr(err)
-			return
-		}
-		options := slices.Sorted(maps.Keys(envs))
-		envName := widget.NewRadioGroup(options, func(value string) {})
-		if len(options) > 0 {
-			envName.Selected = options[0]
-		}
-
-		form := &widget.Form{
-			Items: []*widget.FormItem{
-				{Text: "Select Environment", Widget: envName},
-			},
-			OnSubmit: func() {
-				fd := dialog.NewFileOpen(func(reader fyne.URIReadCloser, err error) {
-					if err != nil {
-						app.showErrWithWindow(err, w)
-						return
-					}
-					if reader == nil {
-						return
-					}
-
-					fpath := reader.URI().Path()
-					form := compute.CondaPythonScriptExecution{
-						Env:        envName.Selected,
-						ScriptPath: fpath,
-					}
-					result, envErr := compute.ExecuteCondaPythonScript(app.node, device.ID, form)
-					if envErr != nil {
-						app.showErrWithWindow(envErr, w)
-						return
-					}
-
-					dialog.ShowInformation("Python Script Execution", result, w)
-				}, w)
-				fd.SetFilter(storage.NewExtensionFileFilter([]string{".py"}))
-				fd.Show()
-			},
-		}
-
-		w.SetContent(form)
-		w.Show()
-	})
-
-	deviceControls := container.NewHBox(filesTree, sendFile, prepareCondaPython, executeCondaPythonScript)
+	deviceControls := container.NewHBox(filesTree, sendFile, openTerminal)
 
 	split := container.NewHSplit(content, container.NewVBox(contentText, deviceControls))
-	split.Offset = 0.2
+	split.Offset = 0.7
 
 	return split
+}
+
+func (app *GUIApp) openTerminalWindow(peerID peer.ID, deviceID string) {
+	w := app.a.NewWindow(fmt.Sprintf("Terminal - %s", deviceID))
+	w.Resize(fyne.NewSize(900, 650))
+
+	status := widget.NewLabel("Ready")
+
+	output := widget.NewMultiLineEntry()
+	output.Disable()
+	output.Wrapping = fyne.TextWrapOff
+
+	scroll := container.NewScroll(output)
+	scroll.SetMinSize(fyne.NewSize(880, 500))
+
+	stdinEntry := widget.NewEntry()
+	stdinEntry.SetPlaceHolder("Type command and press Enter (or Ctrl+D to close stdin)")
+
+	cancelBtn := widget.NewButton("Cancel", func() {})
+	cancelBtn.Disable()
+
+	appendCh := make(chan string, 256)
+	closeCh := make(chan struct{})
+
+	var client *compute_service.Client
+	var currentHandle *compute_service.RawExecutionHandle
+	var isConnecting bool
+
+	flush := func(s string) {
+		// Best-effort append; keep it simple (terminal output sizes are user-driven).
+		output.SetText(output.Text + s)
+		// Auto-scroll to bottom
+		scroll.ScrollToBottom()
+	}
+
+	go func() {
+		for {
+			select {
+			case <-closeCh:
+				return
+			case s := <-appendCh:
+				fyne.Do(func() { flush(s) })
+			}
+		}
+	}()
+
+	connect := func() error {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		c, err := p2p_compute.DialComputeClient(ctx, app.node, peerID)
+		if err != nil {
+			return err
+		}
+		client = c
+		status.SetText("Connected")
+		return nil
+	}
+
+	readStream := func(r io.Reader) {
+		buf := make([]byte, 4096)
+		for {
+			n, err := r.Read(buf)
+			if n > 0 {
+				appendCh <- string(buf[:n])
+			}
+			if err != nil {
+				if err != io.EOF {
+					appendCh <- fmt.Sprintf("\n[stream error] %v\n", err)
+				}
+				return
+			}
+		}
+	}
+
+	readLog := func(r io.Reader) {
+		sc := bufio.NewScanner(r)
+		for sc.Scan() {
+			line := strings.TrimSpace(sc.Text())
+			if line == "" {
+				continue
+			}
+			var e map[string]any
+			if err := json.Unmarshal([]byte(line), &e); err == nil {
+				typ, _ := e["type"].(string)
+				if typ != "" {
+					// Log entries are typically for debugging; we can show them optionally
+					// For now, skip them to keep output clean
+					continue
+				}
+			}
+		}
+	}
+
+	// Execute a command dynamically
+	executeCommand := func(cmdLine string) error {
+		if client == nil {
+			return fmt.Errorf("not connected")
+		}
+
+		// Parse command line with proper quote and escape handling
+		cmd, args := utils.ParseCommandLine(cmdLine)
+		if cmd == "" {
+			return fmt.Errorf("empty command")
+		}
+
+		// Show command being executed
+		appendCh <- fmt.Sprintf("$ %s\n", cmdLine)
+
+		h, err := client.Run(context.Background(), compute_service.RunRequest{
+			RunID:   "",
+			Command: cmd,
+			Args:    args,
+		})
+		if err != nil {
+			return err
+		}
+
+		currentHandle = h
+
+		// Start reading streams
+		go readStream(h.Stdout)
+		go readStream(h.Stderr)
+		go readLog(h.Log)
+
+		// Monitor completion
+		go func() {
+			err := <-h.Done
+			code := <-h.ExitCode
+			fyne.Do(func() {
+				if err != nil {
+					appendCh <- fmt.Sprintf("[exit] error: %v\n", err)
+				} else {
+					appendCh <- fmt.Sprintf("[exit] code=%d\n", code)
+				}
+				// Clear current handle when done
+				if currentHandle == h {
+					currentHandle = nil
+					cancelBtn.Disable()
+				}
+			})
+		}()
+
+		return nil
+	}
+
+	// Execute command from input
+	executeInput := func() {
+		txt := strings.TrimSpace(stdinEntry.Text)
+		if txt == "" {
+			return
+		}
+
+		// If not connected, connect first, then execute the command
+		if client == nil {
+			if isConnecting {
+				return // Already connecting
+			}
+			isConnecting = true
+			status.SetText("Connecting...")
+			stdinEntry.Disable()
+
+			// Save the command to execute after connection
+			cmdToExecute := txt
+			stdinEntry.SetText("")
+
+			go func() {
+				if err := connect(); err != nil {
+					fyne.Do(func() {
+						app.showErrWithWindow(err, w)
+						status.SetText("Connection failed (policy may block; whitelist the peer in 'White List')")
+						stdinEntry.Enable()
+						isConnecting = false
+					})
+					return
+				}
+				// Execute the first command after connection
+				if err := executeCommand(cmdToExecute); err != nil {
+					fyne.Do(func() {
+						app.showErrWithWindow(err, w)
+						status.SetText("Command execution failed")
+						stdinEntry.Enable()
+						isConnecting = false
+					})
+					return
+				}
+				fyne.Do(func() {
+					status.SetText("Connected")
+					stdinEntry.Enable()
+					cancelBtn.Enable()
+					isConnecting = false
+				})
+			}()
+			return
+		}
+
+		// If a command is still running, send input to it
+		if currentHandle != nil && currentHandle.Stdin != nil {
+			stdinEntry.SetText("")
+			txt += "\n"
+			_, err := currentHandle.Stdin.Write([]byte(txt))
+			if err != nil {
+				fyne.Do(func() {
+					app.showErrWithWindow(err, w)
+				})
+			}
+			return
+		}
+
+		// Execute new command
+		stdinEntry.SetText("")
+		if err := executeCommand(txt); err != nil {
+			fyne.Do(func() {
+				app.showErrWithWindow(err, w)
+			})
+			return
+		}
+		cancelBtn.Enable()
+	}
+
+	stdinEntry.OnSubmitted = func(_ string) { executeInput() }
+
+	cancelBtn.OnTapped = func() {
+		if currentHandle == nil {
+			return
+		}
+		if err := currentHandle.Cancel(); err != nil {
+			fyne.Do(func() {
+				app.showErrWithWindow(err, w)
+			})
+		}
+	}
+
+	w.SetOnClosed(func() {
+		close(closeCh)
+		if currentHandle != nil {
+			_ = currentHandle.Cancel()
+		}
+		if client != nil {
+			_ = client.Close()
+		}
+	})
+
+	top := container.NewVBox(
+		widget.NewLabel(fmt.Sprintf("Device: %s", deviceID)),
+		status,
+	)
+	// Make stdinEntry expand to max width by placing it in the center of a border container
+	bottom := container.NewBorder(nil, nil, nil, cancelBtn, stdinEntry)
+	w.SetContent(container.NewBorder(top, bottom, nil, nil, scroll))
+	w.Show()
 }
 
 func (app *GUIApp) initProxies() fyne.CanvasObject {
@@ -655,63 +793,139 @@ func (app *GUIApp) Setup() {
 	app.a.SetIcon(icon)
 
 	w := app.a.NewWindow("Stellar Setup Node")
-	w.Resize(fyne.NewSize(800, 600))
+	w.Resize(fyne.NewSize(800, 700))
 
-	pref := app.a.Preferences()
+	// Load config from file
+	cfg, _, err := config.LoadConfig()
+	if err != nil {
+		logger.Warnf("Failed to load config: %v, using defaults", err)
+		cfg = config.DefaultConfig()
+	}
 
 	privkey := widget.NewEntry()
-	privkey.Text = pref.StringWithFallback("stellarPrivkey", "0")
+	if cfg.B64PrivKey != "" {
+		privkey.Text = cfg.B64PrivKey
+	} else if cfg.Seed != 0 {
+		privkey.Text = strconv.FormatInt(cfg.Seed, 10)
+	} else {
+		privkey.Text = "0"
+	}
 	listenHost := widget.NewEntry()
-	listenHost.Text = pref.StringWithFallback("stellarListenHost", "0.0.0.0")
+	listenHost.Text = cfg.ListenHost
 	listenPort := widget.NewEntry()
-	listenPort.Text = pref.StringWithFallback("stellarListenPort", "0")
+	listenPort.Text = strconv.Itoa(cfg.ListenPort)
 	referenceToken := widget.NewEntry()
-	referenceToken.Text = pref.String("stellarReferenceToken")
+	referenceToken.Text = cfg.ReferenceToken
+	bootstrapper := widget.NewCheck("", func(b bool) {})
+	bootstrapper.Checked = cfg.Bootstrapper
+	relay := widget.NewCheck("", func(b bool) {})
+	relay.Checked = cfg.Relay
 	metrics := widget.NewCheck("", func(b bool) {})
-	metrics.Checked = pref.Bool("stellarMetrics")
+	metrics.Checked = cfg.Metrics
+	metricsPort := widget.NewEntry()
+	metricsPort.Text = strconv.Itoa(cfg.MetricsPort)
 	api := widget.NewCheck("", func(b bool) {})
-	api.Checked = pref.BoolWithFallback("stellarAPI", true)
+	api.Checked = cfg.APIServer
+	apiPort := widget.NewEntry()
+	apiPort.Text = strconv.Itoa(cfg.APIPort)
+	disablePolicy := widget.NewCheck("", func(b bool) {})
+	disablePolicy.Checked = cfg.DisablePolicy
+	noSocket := widget.NewCheck("", func(b bool) {})
+	noSocket.Checked = cfg.NoSocketServer
+	debug := widget.NewCheck("", func(b bool) {})
+	debug.Checked = cfg.Debug
 
 	form := &widget.Form{
 		Items: []*widget.FormItem{
-			{Text: "Private Key", Widget: privkey},
+			{Text: "Private Key (base64 or seed)", Widget: privkey},
 			{Text: "Listen Host", Widget: listenHost},
 			{Text: "Listen Port", Widget: listenPort},
 			{Text: "Reference Token", Widget: referenceToken},
+			{Text: "Run as Bootstrapper", Widget: bootstrapper},
+			{Text: "Enable Relay", Widget: relay},
 			{Text: "Enable Metrics Server", Widget: metrics},
+			{Text: "Metrics Port", Widget: metricsPort},
+			{Text: "Enable API Server", Widget: api},
+			{Text: "API Port", Widget: apiPort},
+			{Text: "Disable Policy", Widget: disablePolicy},
+			{Text: "Disable Socket Server", Widget: noSocket},
+			{Text: "Debug Mode", Widget: debug},
 		},
 		OnSubmit: func() {
-			pref.SetString("stellarPrivkey", privkey.Text)
-			pref.SetString("stellarListenHost", listenHost.Text)
-			pref.SetString("stellarListenPort", listenPort.Text)
-			pref.SetString("stellarReferenceToken", referenceToken.Text)
-			pref.SetBool("stellarMetrics", metrics.Checked)
+			// Update config
+			cfg.ListenHost = listenHost.Text
+			if port, err := strconv.Atoi(listenPort.Text); err == nil {
+				cfg.ListenPort = port
+			}
+			cfg.ReferenceToken = referenceToken.Text
+			cfg.Bootstrapper = bootstrapper.Checked
+			cfg.Relay = relay.Checked
+			cfg.Metrics = metrics.Checked
+			if port, err := strconv.Atoi(metricsPort.Text); err == nil {
+				cfg.MetricsPort = port
+			}
+			cfg.APIServer = api.Checked
+			if port, err := strconv.Atoi(apiPort.Text); err == nil {
+				cfg.APIPort = port
+			}
+			cfg.DisablePolicy = disablePolicy.Checked
+			cfg.NoSocketServer = noSocket.Checked
+			cfg.Debug = debug.Checked
 
-			device := device.Device{}
-
+			// Parse private key
 			if seed, seedErr := strconv.ParseInt(privkey.Text, 10, 64); seedErr != nil {
-				device.ImportKey(privkey.Text)
+				cfg.B64PrivKey = privkey.Text
+				cfg.Seed = 0
 			} else {
-				device.GenerateKey(seed)
+				cfg.Seed = seed
+				cfg.B64PrivKey = ""
 			}
 
-			port, portErr := strconv.ParseUint(listenPort.Text, 10, 64)
-			if portErr != nil {
-				app.showErr(portErr)
+			// Save config
+			if saveErr := config.SaveConfig(cfg); saveErr != nil {
+				app.showErr(saveErr)
 				return
 			}
 
-			device.Init(listenHost.Text, port)
+			// Start node (bootstrapper or regular)
+			device := device.Device{}
 
-			device.SetReferenceToken(referenceToken.Text)
+			// Only set key via opts if not using b64privkey directly
+			if cfg.B64PrivKey == "" {
+				device.GenerateKey(cfg.Seed)
+			}
 
-			if metrics.Checked {
-				device.Node.StartMetricsServer(5001)
+			if cfg.DisablePolicy {
+				logger.Warn("Device Policy disabled, it is recommended to turn it on in production environment.")
+			}
+
+			// Initialize device with bootstrapper options
+			device.InitWithOptions(
+				cfg.ListenHost,
+				uint64(cfg.ListenPort),
+				cfg.Bootstrapper,
+				cfg.Relay,
+				cfg.B64PrivKey,
+				cfg.Debug,
+			)
+
+			device.SetReferenceToken(cfg.ReferenceToken)
+
+			device.Node.Policy.Enable = !cfg.DisablePolicy
+
+			if cfg.Metrics {
+				device.Node.StartMetricsServer(uint64(cfg.MetricsPort))
 			}
 
 			device.StartDiscovery()
-			device.StartUnixSocket()
-			device.StartAPI(1524)
+
+			if !cfg.NoSocketServer {
+				device.StartUnixSocket()
+			}
+
+			if cfg.APIServer {
+				device.StartAPI(uint64(cfg.APIPort))
+			}
 
 			app.node = device.Node
 			app.proxy = device.Proxy
@@ -735,6 +949,106 @@ func (app *GUIApp) Setup() {
 	}
 }
 
+func (app *GUIApp) initConfig() fyne.CanvasObject {
+	cfg, _, err := config.LoadConfig()
+	if err != nil {
+		logger.Warnf("Failed to load config: %v, using defaults", err)
+		cfg = config.DefaultConfig()
+	}
+
+	privkey := widget.NewEntry()
+	if cfg.B64PrivKey != "" {
+		privkey.Text = cfg.B64PrivKey
+	} else if cfg.Seed != 0 {
+		privkey.Text = strconv.FormatInt(cfg.Seed, 10)
+	} else {
+		privkey.Text = "0"
+	}
+	listenHost := widget.NewEntry()
+	listenHost.Text = cfg.ListenHost
+	listenPort := widget.NewEntry()
+	listenPort.Text = strconv.Itoa(cfg.ListenPort)
+	referenceToken := widget.NewEntry()
+	referenceToken.Text = cfg.ReferenceToken
+	bootstrapper := widget.NewCheck("", func(b bool) {})
+	bootstrapper.Checked = cfg.Bootstrapper
+	relay := widget.NewCheck("", func(b bool) {})
+	relay.Checked = cfg.Relay
+	metrics := widget.NewCheck("", func(b bool) {})
+	metrics.Checked = cfg.Metrics
+	metricsPort := widget.NewEntry()
+	metricsPort.Text = strconv.Itoa(cfg.MetricsPort)
+	api := widget.NewCheck("", func(b bool) {})
+	api.Checked = cfg.APIServer
+	apiPort := widget.NewEntry()
+	apiPort.Text = strconv.Itoa(cfg.APIPort)
+	disablePolicy := widget.NewCheck("", func(b bool) {})
+	disablePolicy.Checked = cfg.DisablePolicy
+	noSocket := widget.NewCheck("", func(b bool) {})
+	noSocket.Checked = cfg.NoSocketServer
+	debug := widget.NewCheck("", func(b bool) {})
+	debug.Checked = cfg.Debug
+
+	form := &widget.Form{
+		Items: []*widget.FormItem{
+			{Text: "Private Key (base64 or seed)", Widget: privkey},
+			{Text: "Listen Host", Widget: listenHost},
+			{Text: "Listen Port", Widget: listenPort},
+			{Text: "Reference Token", Widget: referenceToken},
+			{Text: "Run as Bootstrapper", Widget: bootstrapper},
+			{Text: "Enable Relay", Widget: relay},
+			{Text: "Enable Metrics Server", Widget: metrics},
+			{Text: "Metrics Port", Widget: metricsPort},
+			{Text: "Enable API Server", Widget: api},
+			{Text: "API Port", Widget: apiPort},
+			{Text: "Disable Policy", Widget: disablePolicy},
+			{Text: "Disable Socket Server", Widget: noSocket},
+			{Text: "Debug Mode", Widget: debug},
+		},
+		OnSubmit: func() {
+			// Update config
+			cfg.ListenHost = listenHost.Text
+			if port, err := strconv.Atoi(listenPort.Text); err == nil {
+				cfg.ListenPort = port
+			}
+			cfg.ReferenceToken = referenceToken.Text
+			cfg.Bootstrapper = bootstrapper.Checked
+			cfg.Relay = relay.Checked
+			cfg.Metrics = metrics.Checked
+			if port, err := strconv.Atoi(metricsPort.Text); err == nil {
+				cfg.MetricsPort = port
+			}
+			cfg.APIServer = api.Checked
+			if port, err := strconv.Atoi(apiPort.Text); err == nil {
+				cfg.APIPort = port
+			}
+			cfg.DisablePolicy = disablePolicy.Checked
+			cfg.NoSocketServer = noSocket.Checked
+			cfg.Debug = debug.Checked
+
+			// Parse private key
+			if seed, seedErr := strconv.ParseInt(privkey.Text, 10, 64); seedErr != nil {
+				cfg.B64PrivKey = privkey.Text
+				cfg.Seed = 0
+			} else {
+				cfg.Seed = seed
+				cfg.B64PrivKey = ""
+			}
+
+			// Save config
+			if saveErr := config.SaveConfig(cfg); saveErr != nil {
+				app.showErr(saveErr)
+				return
+			}
+
+			dialog.ShowInformation("Success", "Configuration saved successfully!", app.w)
+		},
+	}
+	form.SubmitText = "Save Configuration"
+
+	return container.NewScroll(form)
+}
+
 func (app *GUIApp) SetupMain() {
 	w := app.a.NewWindow("Stellar Debug GUI")
 	w.Resize(fyne.NewSize(800, 600))
@@ -744,6 +1058,7 @@ func (app *GUIApp) SetupMain() {
 		container.NewTabItem("Devices", app.initDevices()),
 		container.NewTabItem("Proxies", app.initProxies()),
 		container.NewTabItem("White List", app.initWhiteList()),
+		container.NewTabItem("Configuration", app.initConfig()),
 	)
 	tabs.SetTabLocation(container.TabLocationLeading)
 
@@ -781,7 +1096,7 @@ func (app *GUIApp) Loop() {
 			}
 			app.overviewContainer.Refresh()
 
-			app.devices.Set(slices.Sorted(maps.Keys(app.node.Devices)))
+			app.devices.Set(slices.Sorted(maps.Keys(app.node.Devices())))
 
 			proxies := make([]string, 0)
 			for _, proxy := range app.proxy.Proxies() {

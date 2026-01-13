@@ -1,35 +1,43 @@
 package proxy
 
 import (
-	"bufio"
 	"context"
-	"crypto/tls"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net"
 	"stellar/p2p/constant"
 	"stellar/p2p/node"
-	"strings"
+	"stellar/p2p/protocols/proxy/service"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
-type TcpProxyService struct {
+// ProxyService represents a client-side TCP proxy that listens on a local port
+// and forwards connections to a remote peer via the proxy protocol.
+type ProxyService struct {
 	node     *node.Node
 	Port     uint64
 	Dest     peer.ID
 	DestAddr string
 	ctx      context.Context
 	cancel   context.CancelFunc
+	client   *service.Client
+	clientMu sync.Mutex
+	// connCounter ensures each proxied TCP connection uses a unique proxy ID so
+	// concurrent browser fetches don't stomp each other's streams.
+	connCounter uint64
 }
 
-func NewTcpProxyService(n *node.Node, port uint64, dest peer.ID, destAddr string) *TcpProxyService {
+// NewProxyService creates a new client-side proxy service.
+// The proxy will listen on the specified local port and forward connections
+// to the remote peer's destination address.
+func NewProxyService(n *node.Node, port uint64, dest peer.ID, destAddr string) *ProxyService {
 	ctx, cancel := context.WithCancel(context.Background())
 
-	return &TcpProxyService{
+	return &ProxyService{
 		node:     n,
 		Port:     port,
 		Dest:     dest,
@@ -39,41 +47,16 @@ func NewTcpProxyService(n *node.Node, port uint64, dest peer.ID, destAddr string
 	}
 }
 
-func tcpStreamHandler(stream network.Stream) {
-	defer stream.Close()
-
-	buf := bufio.NewReader(stream)
-
-	str, err := buf.ReadString('\n')
-	if err != nil {
-		logger.Warn("proxy object required")
-		return
-	}
-	str = strings.Trim(str, "\n")
-
-	var p RemoteProxy
-	err = json.Unmarshal([]byte(str), &p)
-	if err != nil {
-		logger.Warnf("proxy object decode error: %v", err)
-		return
-	}
-	p.stream = stream
-	defer p.Close("proxy closed%v", nil)
-
-	p.Start()
-}
-
-func (p *TcpProxyService) Bind() {
-	p.node.Host.SetStreamHandler(constant.StellarProxyProtocol, p.node.Policy.AuthorizeStream(tcpStreamHandler))
-
-	logger.Info("TCP Proxy server is ready")
-}
-
-func (p *TcpProxyService) Close() {
+// Close stops the proxy service and closes all associated connections.
+func (p *ProxyService) Close() {
 	p.cancel()
+	if p.client != nil {
+		p.client.CloseAll()
+	}
 }
 
-func (p *TcpProxyService) Done() bool {
+// Done returns true if the proxy service has been closed.
+func (p *ProxyService) Done() bool {
 	select {
 	case <-p.ctx.Done():
 		return true
@@ -82,307 +65,141 @@ func (p *TcpProxyService) Done() bool {
 	}
 }
 
-func (p *TcpProxyService) Serve() error {
-	if p.DestAddr != "" {
-		laddr, err := net.ResolveTCPAddr("tcp", fmt.Sprintf("0.0.0.0:%d", p.Port))
-		if err != nil {
-			logger.Warn("Failed to resolve local address: %s", err)
-			return err
-		}
-		raddr, err := net.ResolveTCPAddr("tcp", p.DestAddr)
-		if err != nil {
-			logger.Warn("Failed to resolve remote address: %s", err)
-			return err
-		}
-		listener, err := net.ListenTCP("tcp", laddr)
-		if err != nil {
-			logger.Warn("Failed to open local port to listen: %s", err)
-			return err
-		}
+// getOrCreateClient gets or creates a client connection to the destination peer.
+// The client is reused across multiple proxy connections to the same peer.
+func (p *ProxyService) getOrCreateClient() (*service.Client, error) {
+	p.clientMu.Lock()
+	defer p.clientMu.Unlock()
 
-		logger.Infof("proxy listening on %v for %v", laddr, raddr)
-
-		id := p.Dest.String()
-		cleanup := func() {
-			listener.Close()
-			p.Close()
-		}
-
-		go func() {
-			defer cleanup()
-
-			for {
-				select {
-				case <-p.ctx.Done():
-					return
-				default:
-					conn, err := listener.AcceptTCP()
-					if err != nil {
-						logger.Debugf("Failed to accept connection '%s'", err)
-						continue
-					}
-
-					go p.acceptConnection(conn, id, laddr, raddr)
-				}
-			}
-		}()
-
-		go func() {
-			defer cleanup()
-
-			ticker := time.NewTicker(500 * time.Millisecond)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-p.ctx.Done():
-					return
-				case <-ticker.C:
-					if _, deviceErr := p.node.GetDevice(id); deviceErr != nil {
-						logger.Warnf("Device %v disconnected", id)
-						return
-					}
-				}
-			}
-		}()
+	if p.client != nil {
+		return p.client, nil
 	}
+
+	// Create new stream to destination
+	allowCtx := network.WithAllowLimitedConn(p.ctx, string(constant.StellarProxyProtocol))
+	stream, err := p.node.Host.NewStream(allowCtx, p.Dest, constant.StellarProxyProtocol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create stream: %w", err)
+	}
+
+	// Create client with stream
+	clientID := p.node.ID().String()
+	client := service.NewClient(clientID, stream)
+	if client == nil {
+		stream.Close()
+		return nil, fmt.Errorf("failed to create proxy client")
+	}
+
+	// Connect (perform handshake)
+	if err := client.Connect(); err != nil {
+		stream.Close()
+		return nil, fmt.Errorf("failed to connect: %w", err)
+	}
+
+	p.client = client
+	return client, nil
+}
+
+// Serve starts listening on the local port and forwarding connections to the remote peer.
+// This method blocks until the service is closed via Close().
+func (p *ProxyService) Serve() error {
+	if p.DestAddr == "" {
+		return fmt.Errorf("destination address required")
+	}
+
+	laddr, err := net.ResolveTCPAddr("tcp", fmt.Sprintf("0.0.0.0:%d", p.Port))
+	if err != nil {
+		logger.Warnf("Failed to resolve local address: %v", err)
+		return err
+	}
+
+	listener, err := net.ListenTCP("tcp", laddr)
+	if err != nil {
+		logger.Warnf("Failed to open local port to listen: %v", err)
+		return err
+	}
+	// Update port in case caller passed 0 to pick a free port.
+	if tcpAddr, ok := listener.Addr().(*net.TCPAddr); ok {
+		p.Port = uint64(tcpAddr.Port)
+	}
+
+	logger.Infof("Proxy listening on %v for %v", laddr, p.DestAddr)
+
+	id := p.Dest.String()
+	cleanup := func() {
+		listener.Close()
+		p.Close()
+	}
+
+	go func() {
+		defer cleanup()
+
+		for {
+			select {
+			case <-p.ctx.Done():
+				return
+			default:
+				conn, err := listener.AcceptTCP()
+				if err != nil {
+					logger.Debugf("Failed to accept connection: %v", err)
+					continue
+				}
+
+				go p.acceptConnection(conn, id, laddr)
+			}
+		}
+	}()
+
+	go func() {
+		defer cleanup()
+
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-p.ctx.Done():
+				return
+			case <-ticker.C:
+				if _, deviceErr := p.node.GetDevice(id); deviceErr != nil {
+					logger.Warnf("Device %v disconnected", id)
+					return
+				}
+			}
+		}
+	}()
 
 	return nil
 }
 
-func (p *TcpProxyService) acceptConnection(conn *net.TCPConn, id string, laddr, raddr *net.TCPAddr) {
+// acceptConnection handles an incoming TCP connection and forwards it through the proxy.
+func (p *ProxyService) acceptConnection(conn *net.TCPConn, id string, laddr *net.TCPAddr) {
 	defer conn.Close()
 
 	if _, deviceErr := p.node.GetDevice(id); deviceErr != nil {
-		p.Close()
+		logger.Warnf("Device %v unavailable: %v", id, deviceErr)
 		return
 	}
 
-	stream, err := p.node.Host.NewStream(p.ctx, p.Dest, constant.StellarProxyProtocol)
+	client, err := p.getOrCreateClient()
 	if err != nil {
-		logger.Error(err)
+		logger.Errorf("Failed to get client: %v", err)
 		return
 	}
-	defer stream.Close()
 
-	proxy := NewLocal(conn, laddr, raddr, stream)
-	proxy.Nagles = false
-	defer proxy.Close("proxy closed%v", nil)
-
-	remoteProxy := proxy.ToRemoteProxy()
-	jsonData, err := json.Marshal(remoteProxy)
+	// Use a unique proxy ID per accepted connection to avoid replacing active
+	// proxies when multiple browser connections occur in parallel.
+	proxyID := p.nextProxyID(id)
+	_, err = client.OpenWithLocalConn(proxyID, p.DestAddr, "tcp", conn)
 	if err != nil {
-		logger.Error(err)
+		logger.Errorf("Failed to open proxy: %v", err)
 		return
 	}
 
-	_, err = stream.Write([]byte(fmt.Sprintf("%v\n", string(jsonData))))
-	if err != nil {
-		logger.Error(err)
-		return
-	}
-
-	proxy.Start(p.ctx)
+	logger.Debugf("Proxy connection established: %s -> %s", proxyID, p.DestAddr)
+	<-p.ctx.Done()
 }
 
-type RemoteProxy struct {
-	Raddr      *net.TCPAddr
-	rconn      io.ReadWriteCloser
-	stream     network.Stream
-	closed     bool
-	errsig     chan bool
-	tlsUnwrapp bool
-	tlsAddress string
-
-	// Settings
-	Nagles bool
-}
-
-func NewRemote(raddr *net.TCPAddr, Nagles bool) *RemoteProxy {
-	return &RemoteProxy{
-		Raddr:  raddr,
-		closed: false,
-		errsig: make(chan bool),
-		Nagles: Nagles,
-	}
-}
-
-func NewRemoteTLSUnwrapped(raddr *net.TCPAddr, destAddr string, Nagles bool) *RemoteProxy {
-	p := NewRemote(raddr, Nagles)
-	p.tlsUnwrapp = true
-	p.tlsAddress = destAddr
-	return p
-}
-
-// Start - open connection to remote and start proxying data.
-func (p *RemoteProxy) Start() {
-	var err error
-
-	//connect to remote
-	if p.tlsUnwrapp {
-		p.rconn, err = tls.Dial("tcp", p.tlsAddress, nil)
-	} else {
-		p.rconn, err = net.DialTCP("tcp", nil, p.Raddr)
-	}
-	if err != nil {
-		logger.Warnf("Remote connection failed: %s", err)
-		return
-	}
-	defer p.rconn.Close()
-
-	//nagles?
-	if p.Nagles {
-		if conn, ok := p.rconn.(setNoDelayer); ok {
-			conn.SetNoDelay(true)
-		}
-	}
-
-	//bidirectional copy
-	go p.pipe(p.rconn, p.stream)
-	go p.pipe(p.stream, p.rconn)
-
-	//wait for close...
-	<-p.errsig
-}
-
-func (p *RemoteProxy) Close(s string, err error) {
-	if p.closed {
-		return
-	}
-	if err != io.EOF {
-		logger.Warnf(s, err)
-	}
-	p.errsig <- true
-	p.closed = true
-}
-
-func (p *RemoteProxy) pipe(src, dst io.ReadWriter) {
-	//directional copy (64k buffer)
-	buff := make([]byte, 0xffff)
-	for {
-		if p.closed {
-			return
-		}
-
-		n, err := src.Read(buff)
-		if err != nil {
-			p.Close("Read failed '%s'", err)
-			return
-		}
-		b := buff[:n]
-
-		//write out result
-		_, err = dst.Write(b)
-		if err != nil {
-			p.Close("Write failed '%s'", err)
-			return
-		}
-	}
-}
-
-// Proxy - Manages a Proxy connection, piping data between local and remote.
-type Proxy struct {
-	laddr, raddr *net.TCPAddr
-	lconn        io.ReadWriteCloser
-	stream       network.Stream
-	closed       bool
-	errsig       chan bool
-	tlsUnwrapp   bool
-	tlsAddress   string
-
-	// Settings
-	Nagles bool
-}
-
-// NewLocal - Create a new Proxy instance. Takes over local connection passed in,
-// and closes it when finished.
-func NewLocal(lconn *net.TCPConn, laddr, raddr *net.TCPAddr, stream network.Stream) *Proxy {
-	return &Proxy{
-		lconn:  lconn,
-		laddr:  laddr,
-		raddr:  raddr,
-		stream: stream,
-		closed: false,
-		errsig: make(chan bool),
-	}
-}
-
-// NewLocalTLSUnwrapped - Create a new Proxy instance with a remote TLS server for
-// which we want to unwrap the TLS to be able to connect without encryption
-// locally
-func NewLocalTLSUnwrapped(lconn *net.TCPConn, laddr, raddr *net.TCPAddr, addr string, stream network.Stream) *Proxy {
-	p := NewLocal(lconn, laddr, raddr, stream)
-	p.tlsUnwrapp = true
-	p.tlsAddress = addr
-	return p
-}
-
-func (p *Proxy) ToRemoteProxy() *RemoteProxy {
-	remoteProxy := NewRemote(p.raddr, p.Nagles)
-	return remoteProxy
-}
-
-type setNoDelayer interface {
-	SetNoDelay(bool) error
-}
-
-// Start - open connection to remote and start proxying data.
-func (p *Proxy) Start(ctx context.Context) {
-	defer p.lconn.Close()
-
-	//nagles?
-	if p.Nagles {
-		if conn, ok := p.lconn.(setNoDelayer); ok {
-			conn.SetNoDelay(true)
-		}
-	}
-
-	//bidirectional copy
-	go p.pipe(ctx, p.lconn, p.stream)
-	go p.pipe(ctx, p.stream, p.lconn)
-
-	//wait for close...
-	<-p.errsig
-}
-
-func (p *Proxy) Close(s string, err error) {
-	// TODO improve error handling
-	if p.closed {
-		return
-	}
-	if err != io.EOF {
-		logger.Warnf(s, err)
-	}
-	p.errsig <- true
-	p.closed = true
-	p.stream.ResetWithError(500)
-}
-
-func (p *Proxy) pipe(ctx context.Context, src, dst io.ReadWriter) {
-	//directional copy (64k buffer)
-	buff := make([]byte, 0xffff)
-	for {
-		if p.closed {
-			return
-		}
-
-		select {
-		case <-ctx.Done():
-			p.Close("context done%v", nil)
-			return
-		default:
-			n, err := src.Read(buff)
-			if err != nil {
-				p.Close("Read failed '%s'", err)
-				return
-			}
-			b := buff[:n]
-
-			//write out result
-			_, err = dst.Write(b)
-			if err != nil {
-				p.Close("Write failed '%s'", err)
-				return
-			}
-		}
-	}
+// nextProxyID returns a per-connection unique proxy identifier.
+func (p *ProxyService) nextProxyID(base string) string {
+	return fmt.Sprintf("%s:%d:%d", base, p.Port, atomic.AddUint64(&p.connCounter, 1))
 }

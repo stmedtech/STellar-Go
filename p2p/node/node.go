@@ -26,10 +26,11 @@ import (
 
 	dht "github.com/libp2p/go-libp2p-kad-dht"
 	drouting "github.com/libp2p/go-libp2p/p2p/discovery/routing"
-	dutil "github.com/libp2p/go-libp2p/p2p/discovery/util"
+	relayclient "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/client"
 	"github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/relay"
 	"github.com/libp2p/go-libp2p/p2p/security/noise"
 	libp2ptls "github.com/libp2p/go-libp2p/p2p/security/tls"
+	ma "github.com/multiformats/go-multiaddr"
 )
 
 var logger = golog.Logger("stellar-p2p-node")
@@ -55,13 +56,20 @@ type Node struct {
 	ReferenceToken string
 	Policy         *policy.ProtocolPolicy
 
-	Host    host.Host
-	DHT     *dht.IpfsDHT
-	Devices map[string]Device
+	Host host.Host
+	DHT  *dht.IpfsDHT
+	// Internal device storage - use Devices() and DiscoveredDevices() methods
+	discoveredDevices map[string]Device
+	healthyDevices    map[string]Device
 
 	CTX    context.Context
 	Cancel context.CancelFunc
 	DLock  sync.RWMutex
+
+	// Relay reservation tracking
+	relayReservations    map[peer.ID]time.Time // Track when reservations were made
+	relayReservationTTL  time.Duration         // TTL for relay reservations
+	relayReservationLock sync.RWMutex          // Lock for relay reservation map
 }
 
 func buildListenAddrOptions(listenHost string, listenPort uint64) []libp2p.Option {
@@ -73,93 +81,23 @@ func buildListenAddrOptions(listenHost string, listenPort uint64) []libp2p.Optio
 	}
 }
 
-func NewBootstrapper(
-	listenHost string,
-	listenPort uint64,
-	b64privkey string,
-	relayNode bool,
-	debug bool,
-	opts ...libp2p.Option,
-) (n *Node, err error) {
-	lopts := []libp2p.Option{
-		libp2p.Security(libp2ptls.ID, libp2ptls.New),
-		libp2p.Security(noise.ID, noise.New),
-
-		libp2p.DefaultTransports,
-		libp2p.DefaultMuxers,
-
-		libp2p.NATPortMap(),
-		libp2p.EnableNATService(),
-		libp2p.EnableHolePunching(),
-	}
-	lopts = append(lopts, buildListenAddrOptions(listenHost, listenPort)...)
-
-	if debug {
-		// prevent "connections per ip limit exceeded" error
-		lopts = append(lopts, libp2p.ResourceManager(&network.NullResourceManager{}))
-	}
-
-	if b64privkey != "" {
-		opt, privkeyErr := LoadPrivateKey(b64privkey)
-		if privkeyErr != nil {
-			logger.Fatalln(privkeyErr)
-		}
-		lopts = append(lopts, opt)
-	} else {
-		opt, privkeyErr := GeneratePrivateKey(0)
-		if privkeyErr != nil {
-			logger.Fatalln(privkeyErr)
-		}
-		lopts = append(lopts, opt)
-	}
-
-	host, err := libp2p.New(lopts...)
-	if err != nil {
-		return
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-
-	n = &Node{
-		Bootstrapper: true,
-		RelayNode:    relayNode,
-
-		CTX:    ctx,
-		Cancel: cancel,
-
-		Host:    host,
-		DHT:     nil,
-		Devices: make(map[string]Device),
-	}
-	logger.Infof("Node ID: %v", n.ID())
-
-	logger.Infof("Start listening to %v...", n.Host.Addrs())
-
-	if n.RelayNode {
-		_, relayErr := relay.New(n.Host)
-		if relayErr != nil {
-			err = relayErr
-			return
-		}
-
-		relayInfo := peer.AddrInfo{
-			ID:    n.Host.ID(),
-			Addrs: n.Host.Addrs(),
-		}
-		logger.Infof("Connect to this relay node using: %v", relayInfo)
-	}
-
-	if _, dhtErr := n.InitDHT(true); dhtErr != nil {
-		err = dhtErr
-		return
-	}
-
-	return
-}
-
 func NewNode(
 	listenHost string,
 	listenPort uint64,
+	opts ...libp2p.Option,
+) (n *Node, err error) {
+	return NewNodeWithOptions(listenHost, listenPort, false, false, "", false, opts...)
+}
+
+// NewNodeWithOptions creates a new node with optional bootstrapper and relay capabilities.
+// When bootstrapper is true, the node acts as both a bootstrapper and a regular node.
+func NewNodeWithOptions(
+	listenHost string,
+	listenPort uint64,
+	bootstrapper bool,
+	relayNode bool,
+	b64privkey string,
+	debug bool,
 	opts ...libp2p.Option,
 ) (n *Node, err error) {
 	peerChan := make(chan peer.AddrInfo, 100)
@@ -200,6 +138,22 @@ func NewNode(
 	}
 	lopts = append(lopts, buildListenAddrOptions(listenHost, listenPort)...)
 
+	// Handle private key
+	if b64privkey != "" {
+		opt, privkeyErr := LoadPrivateKey(b64privkey)
+		if privkeyErr != nil {
+			logger.Fatalln(privkeyErr)
+		}
+		lopts = append(lopts, opt)
+	}
+
+	// Disable resource manager to prevent stream limit errors in test environments
+	// This allows unlimited streams, which is needed for compute operations
+	// For bootstrapper in debug mode, also disable resource manager
+	if debug || !bootstrapper {
+		lopts = append(lopts, libp2p.ResourceManager(&network.NullResourceManager{}))
+	}
+
 	lopts = append(lopts, opts...)
 
 	host, err := libp2p.New(lopts...)
@@ -210,8 +164,8 @@ func NewNode(
 	ctx, cancel := context.WithCancel(context.Background())
 
 	n = &Node{
-		Bootstrapper: false,
-		RelayNode:    false,
+		Bootstrapper: bootstrapper,
+		RelayNode:    relayNode,
 		Policy: &policy.ProtocolPolicy{
 			Enable:    true,
 			WhiteList: make([]string, 0),
@@ -220,20 +174,80 @@ func NewNode(
 		CTX:    ctx,
 		Cancel: cancel,
 
-		Host:    host,
-		DHT:     nil,
-		Devices: make(map[string]Device),
+		Host:              host,
+		DHT:               nil,
+		discoveredDevices: make(map[string]Device),
+		healthyDevices:    make(map[string]Device),
+
+		relayReservations:   make(map[peer.ID]time.Time),
+		relayReservationTTL: time.Hour, // Match the ReservationTTL in relay resources
 	}
+
+	// Load whitelist from config immediately after policy initialization
+	// This ensures saved whitelist is loaded before bootstrappers are added
+	n.Policy.LoadFromConfig()
+
 	logger.Infof("Node ID: %v", n.ID())
 
 	logger.Infof("Start listening to %v...", n.Host.Addrs())
 
-	if _, dhtErr := n.InitDHT(false); dhtErr != nil {
+	// Start providing peers for auto-relay (both bootstrapper and regular nodes do this)
+	go n.Provide(peerChan)
+
+	// Enable relay service if relayNode is true
+	if n.RelayNode {
+		resources := relay.Resources{
+			Limit: &relay.RelayLimit{
+				Duration: 7 * 24 * time.Hour, // 7 days for long protocol connections
+				Data:     1 << 36,            // 64GB
+			},
+
+			ReservationTTL: time.Hour,
+
+			MaxReservations: 1 << 10,
+			MaxCircuits:     1 << 10,
+			BufferSize:      2048,
+
+			MaxReservationsPerPeer: 1,
+			MaxReservationsPerIP:   1 << 5,
+			MaxReservationsPerASN:  1 << 10,
+		}
+		_, relayErr := relay.New(n.Host, relay.WithResources(resources))
+		if relayErr != nil {
+			err = relayErr
+			return
+		}
+
+		relayInfo := peer.AddrInfo{
+			ID:    n.Host.ID(),
+			Addrs: n.Host.Addrs(),
+		}
+		logger.Infof("Connect to this relay node using: %v", relayInfo)
+	}
+
+	// Initialize DHT: bootstrapper uses true, regular node uses false
+	if _, dhtErr := n.InitDHT(bootstrapper); dhtErr != nil {
 		err = dhtErr
 		return
 	}
 
+	// Start periodic relay reservation refresh
+	go n.refreshRelayReservations()
+
 	return
+}
+
+// NewBootstrapper is a convenience function that creates a bootstrapper node.
+// It is now a wrapper around NewNodeWithOptions for backward compatibility.
+func NewBootstrapper(
+	listenHost string,
+	listenPort uint64,
+	b64privkey string,
+	relayNode bool,
+	debug bool,
+	opts ...libp2p.Option,
+) (n *Node, err error) {
+	return NewNodeWithOptions(listenHost, listenPort, true, relayNode, b64privkey, debug, opts...)
 }
 
 func (n *Node) StartMetricsServer(port uint64) {
@@ -300,19 +314,26 @@ func (n *Node) InitDHT(bootstrapper bool) (anyConnected bool, err error) {
 		}
 
 		wg.Add(1)
-		go func() {
+		go func(bs peer.AddrInfo) {
 			defer wg.Done()
 
-			if err := host.Connect(ctx, bootstrap); err != nil {
-				logger.Warnf("Error while connecting to bootstrap node: %q: %v", bootstrap.ID, err)
+			if err := host.Connect(ctx, bs); err != nil {
+				logger.Warnf("Error while connecting to bootstrap node: %q: %v", bs.ID, err)
 				return
 			}
 
-			n.Policy.AddWhiteList(bootstrap.ID.String())
+			n.Policy.AddWhiteList(bs.ID.String())
 
 			anyConnected = true
-			logger.Infof("Connection established with bootstrap node: %q", bootstrap.ID)
-		}()
+			logger.Infof("Connection established with bootstrap node: %q", bs.ID)
+
+			// Try to reserve relay slot if bootstrap is a relay node
+			if n.reserveRelaySlot(ctx, bs) {
+				logger.Infof("Relay reservation established with bootstrap node: %q", bs.ID)
+			} else {
+				logger.Debugf("Bootstrap node %q is not a relay or reservation failed", bs.ID)
+			}
+		}(bootstrap)
 	}
 	wg.Wait()
 
@@ -321,10 +342,10 @@ func (n *Node) InitDHT(bootstrapper bool) (anyConnected bool, err error) {
 	return anyConnected, nil
 }
 
-func (n *Node) discoverDevice(peer peer.AddrInfo) (device *Device, err error) {
-	id := peer.ID.String()
+func (n *Node) discoverDevice(peerInfo peer.AddrInfo, relayInfos []peer.AddrInfo) (device *Device, err error) {
+	id := peerInfo.ID.String()
 
-	if peer.ID == n.ID() {
+	if peerInfo.ID == n.ID() {
 		sysInfo, sysInfoErr := util.GetSystemInformation()
 		if sysInfoErr != nil {
 			logger.Fatalln(sysInfoErr)
@@ -332,38 +353,114 @@ func (n *Node) discoverDevice(peer peer.AddrInfo) (device *Device, err error) {
 		}
 		n.DLock.Lock()
 		device = &Device{
-			ID:      peer.ID,
-			Status:  "healthy",
+			ID:      peerInfo.ID,
+			Status:  DeviceStatusHealthy,
 			SysInfo: sysInfo,
 		}
-		n.Devices[id] = *device
+		n.healthyDevices[id] = *device
 		n.DLock.Unlock()
 		return
 	}
 
-	if pingPongErr := n.Ping(peer.ID); pingPongErr != nil {
-		n.Host.Network().ClosePeer(peer.ID)
-		n.Host.Peerstore().RemovePeer(peer.ID)
-		n.Host.Peerstore().ClearAddrs(peer.ID)
-		n.DHT.RoutingTable().RemovePeer(peer.ID)
-		n.DHT.RefreshRoutingTable()
-		err = pingPongErr
-		return
-	}
-
-	logger.Debugf("Found peer: %v", peer)
+	logger.Debugf("Found peer: %v", peerInfo)
 
 	n.DLock.Lock()
 	device = &Device{
-		ID:     peer.ID,
+		ID:     peerInfo.ID,
 		Status: DeviceStatusDiscovered,
 	}
-	n.Devices[id] = *device
+	n.discoveredDevices[id] = *device
 	n.DLock.Unlock()
 
-	connectErr := n.Host.Connect(n.CTX, peer)
+	// Try direct connection first
+	connectCtx, cancel := context.WithTimeout(n.CTX, 10*time.Second)
+	connectErr := n.Host.Connect(connectCtx, peerInfo)
+	cancel()
+
 	if connectErr != nil {
-		err = connectErr
+		logger.Debugf("Direct connection to %s failed: %v, trying relay...", peerInfo.ID, connectErr)
+		// Direct connection failed, try via relay
+		if len(relayInfos) > 0 {
+			connected := false
+			for _, relayInfo := range relayInfos {
+				// Ensure we're connected to the relay first
+				if n.Host.Network().Connectedness(relayInfo.ID) != network.Connected {
+					logger.Debugf("Not connected to relay %s, skipping", relayInfo.ID)
+					continue
+				}
+				// Get relay addresses from peerstore (may have been updated)
+				relayAddrs := n.Host.Peerstore().Addrs(relayInfo.ID)
+				if len(relayAddrs) == 0 {
+					relayAddrs = relayInfo.Addrs
+				}
+				if len(relayAddrs) == 0 {
+					logger.Debugf("No addresses for relay %s", relayInfo.ID)
+					continue
+				}
+				// Build relay circuit address: relay-addr/p2p/relay-id/p2p-circuit/p2p/target-id
+				circuitPath, err := ma.NewMultiaddr(fmt.Sprintf("/p2p/%s/p2p-circuit/p2p/%s", relayInfo.ID, peerInfo.ID))
+				if err != nil {
+					logger.Debugf("Failed to create circuit path: %v", err)
+					continue
+				}
+				for _, relayBaseAddr := range relayAddrs {
+					circuitAddr := relayBaseAddr.Encapsulate(circuitPath)
+					circuitInfo, err := peer.AddrInfoFromP2pAddr(circuitAddr)
+					if err != nil {
+						logger.Debugf("Failed to parse circuit address: %v", err)
+						continue
+					}
+					connectCtx, cancel := context.WithTimeout(n.CTX, 15*time.Second)
+					err = n.Host.Connect(connectCtx, *circuitInfo)
+					cancel()
+					if err == nil {
+						logger.Infof("Connected to peer %s via relay %s", peerInfo.ID, relayInfo.ID)
+						connected = true
+						break
+					} else {
+						logger.Debugf("Relay connection attempt failed via %s: %v", relayInfo.ID, err)
+					}
+				}
+				if connected {
+					break
+				}
+			}
+			if !connected {
+				n.DLock.Lock()
+				delete(n.discoveredDevices, id)
+				delete(n.healthyDevices, id)
+				n.DLock.Unlock()
+				err = fmt.Errorf("failed to connect to %s (direct and relay)", peerInfo.ID)
+				logger.Debugf("Connection failed: %v", err)
+				return
+			}
+		} else {
+			n.DLock.Lock()
+			delete(n.discoveredDevices, id)
+			delete(n.healthyDevices, id)
+			n.DLock.Unlock()
+			err = fmt.Errorf("direct connection failed and no relays available: %v", connectErr)
+			logger.Debugf("Connection failed: %v", err)
+			return
+		}
+	} else {
+		logger.Debugf("Direct connection to %s succeeded", peerInfo.ID)
+	}
+
+	// Verify connection with ping after connecting
+	if pingPongErr := n.Ping(peerInfo.ID); pingPongErr != nil {
+		n.Host.Network().ClosePeer(peerInfo.ID)
+		n.Host.Peerstore().RemovePeer(peerInfo.ID)
+		n.Host.Peerstore().ClearAddrs(peerInfo.ID)
+		if n.DHT != nil {
+			n.DHT.RoutingTable().RemovePeer(peerInfo.ID)
+			n.DHT.RefreshRoutingTable()
+		}
+		n.DLock.Lock()
+		delete(n.discoveredDevices, id)
+		delete(n.healthyDevices, id)
+		n.DLock.Unlock()
+		err = pingPongErr
 		return
 	}
 
@@ -376,7 +473,8 @@ func (n *Node) healthCheckDevice(device *Device) (err error) {
 	disconnect := func() {
 		logger.Debugf("disconnecting device %v", device.ID)
 		n.DLock.Lock()
-		delete(n.Devices, deviceId)
+		delete(n.discoveredDevices, deviceId)
+		delete(n.healthyDevices, deviceId)
 		n.DLock.Unlock()
 		if n.Bootstrapper {
 			n.Host.Peerstore().RemovePeer(device.ID)
@@ -411,7 +509,9 @@ func (n *Node) healthCheckDevice(device *Device) (err error) {
 		device.Status = DeviceStatusHealthy
 		device.SysInfo = d.SysInfo
 		device.Timestamp = time.Now().UTC()
-		n.Devices[deviceId] = *device
+		// Move from discovered to healthy
+		delete(n.discoveredDevices, deviceId)
+		n.healthyDevices[deviceId] = *device
 		n.DLock.Unlock()
 	case DeviceStatusHealthy:
 		if pingPongErr := n.Ping(device.ID); pingPongErr != nil {
@@ -422,15 +522,15 @@ func (n *Node) healthCheckDevice(device *Device) (err error) {
 
 		n.DLock.Lock()
 		device.Timestamp = time.Now().UTC()
-		n.Devices[deviceId] = *device
+		n.healthyDevices[deviceId] = *device
 		n.DLock.Unlock()
 	}
 
 	return
 }
 
-func (n *Node) ConnectDevice(peer peer.AddrInfo) (device *Device, err error) {
-	id := peer.ID.String()
+func (n *Node) ConnectDevice(peerInfo peer.AddrInfo) (device *Device, err error) {
+	id := peerInfo.ID.String()
 
 	// Skip existing
 	if _, deviceErr := n.GetDevice(id); deviceErr == nil {
@@ -438,12 +538,25 @@ func (n *Node) ConnectDevice(peer peer.AddrInfo) (device *Device, err error) {
 		return
 	}
 
-	if peer.ID == n.ID() {
+	if peerInfo.ID == n.ID() {
 		err = fmt.Errorf("device %s is self", id)
 		return
 	}
 
-	device, discoverErr := n.discoverDevice(peer)
+	// Get relay addresses from bootstrap nodes
+	relayInfos := make([]peer.AddrInfo, 0)
+	for _, bootstrap := range bootstrap.Bootstrappers {
+		if bootstrap.ID == n.ID() || bootstrap.ID == peerInfo.ID {
+			continue
+		}
+		if n.Host.Network().Connectedness(bootstrap.ID) == network.Connected {
+			if n.reserveRelaySlot(n.CTX, bootstrap) {
+				relayInfos = append(relayInfos, bootstrap)
+			}
+		}
+	}
+
+	device, discoverErr := n.discoverDevice(peerInfo, relayInfos)
 	if discoverErr != nil {
 		err = discoverErr
 		return
@@ -462,45 +575,155 @@ func (n *Node) DiscoverDevices() {
 	ctx := n.CTX
 
 	kademliaDHT := n.DHT
-	routingDiscovery := drouting.NewRoutingDiscovery(kademliaDHT)
-	dutil.Advertise(ctx, routingDiscovery, constant.StellarRendezvous)
+	if kademliaDHT == nil {
+		logger.Warn("DHT not initialized, cannot discover devices")
+		return
+	}
 
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
+	// Wait for DHT bootstrap to complete
+	time.Sleep(3 * time.Second)
+
+	routingDiscovery := drouting.NewRoutingDiscovery(kademliaDHT)
+
+	// Add lock for concurrent map write protection
+	var connectedPeersLock sync.Mutex
+	connectedPeers := make(map[peer.ID]bool)
+	advertised := false
+	advertiseTime := time.Time{}
+
+	// Function to refresh relay list from bootstrap nodes
+	refreshRelayInfos := func() []peer.AddrInfo {
+		relayInfos := make([]peer.AddrInfo, 0)
+		for _, bootstrap := range bootstrap.Bootstrappers {
+			if bootstrap.ID == n.ID() {
+				continue
+			}
+			// Check if bootstrap node is connected
+			if n.Host.Network().Connectedness(bootstrap.ID) == network.Connected {
+				// Check if we have a relay reservation (by checking peerstore for relay addresses)
+				// If connected, assume it might be a relay and include it
+				// The actual relay check happens during connection attempt
+				relayInfos = append(relayInfos, bootstrap)
+			}
+		}
+		return relayInfos
+	}
+
+	// Initial relay list
+	relayInfos := refreshRelayInfos()
+
+	advertiseTicker := time.NewTicker(2 * time.Second)
+	defer advertiseTicker.Stop()
+
+	findTicker := time.NewTicker(5 * time.Second)
+	defer findTicker.Stop()
+
+	refreshTicker := time.NewTicker(30 * time.Second)
+	defer refreshTicker.Stop()
+
+	relayRefreshTicker := time.NewTicker(15 * time.Second)
+	defer relayRefreshTicker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
-			peerChan, err := routingDiscovery.FindPeers(ctx, constant.StellarRendezvous)
+		case <-advertiseTicker.C:
+			if !advertised {
+				ttl, err := routingDiscovery.Advertise(ctx, constant.StellarRendezvous)
+				if err != nil {
+					logger.Debugf("Failed to advertise: %v", err)
+					continue
+				}
+				logger.Debugf("discovery: advertising on '%s' (TTL: %v)", constant.StellarRendezvous, ttl)
+				advertised = true
+				advertiseTime = time.Now()
+				advertiseTicker.Reset(30 * time.Second)
+			} else {
+				routingDiscovery.Advertise(ctx, constant.StellarRendezvous)
+			}
+		case <-refreshTicker.C:
+			if kademliaDHT != nil {
+				go kademliaDHT.RefreshRoutingTable()
+			}
+		case <-relayRefreshTicker.C:
+			// Periodically refresh relay list as connections are established
+			relayInfos = refreshRelayInfos()
+			if len(relayInfos) > 0 {
+				logger.Debugf("Refreshed relay list: %d relay(s) available", len(relayInfos))
+			}
+		case <-findTicker.C:
+			if !advertised {
+				continue
+			}
+			// Wait for advertise to propagate before finding peers
+			if !advertiseTime.IsZero() && time.Since(advertiseTime) < 20*time.Second {
+				continue
+			}
+			findCtx, findCancel := context.WithTimeout(ctx, 30*time.Second)
+			peerChan, err := routingDiscovery.FindPeers(findCtx, constant.StellarRendezvous)
 			if err != nil {
-				logger.Warn(err)
+				findCancel()
+				logger.Debugf("Failed to find peers: %v", err)
 				continue
 			}
 
+			foundCount := 0
+			newPeers := 0
 			var wg sync.WaitGroup
-			for peer := range peerChan {
-				id := peer.ID.String()
+			for p := range peerChan {
+				if p.ID == "" || p.ID == n.ID() {
+					continue
+				}
+				foundCount++
 
-				// Skip existing
-				if _, deviceErr := n.GetDevice(id); deviceErr == nil {
+				// Lock on connectedPeers to read & write safely
+				connectedPeersLock.Lock()
+				alreadyConnected := connectedPeers[p.ID] && n.Host.Network().Connectedness(p.ID) == network.Connected
+				wasConnected := connectedPeers[p.ID]
+				connectedPeersLock.Unlock()
+
+				// Skip if already connected
+				if alreadyConnected {
+					continue
+				}
+				if wasConnected {
+					connectedPeersLock.Lock()
+					delete(connectedPeers, p.ID)
+					connectedPeersLock.Unlock()
+				}
+
+				// Skip existing devices (check both discovered and healthy)
+				id := p.ID.String()
+				n.DLock.RLock()
+				_, existsHealthy := n.healthyDevices[id]
+				_, existsDiscovered := n.discoveredDevices[id]
+				n.DLock.RUnlock()
+				if existsHealthy || existsDiscovered {
 					continue
 				}
 
 				wg.Add(1)
-				go func() {
+				go func(peerInfo peer.AddrInfo) {
 					defer wg.Done()
 
-					device, discoverErr := n.discoverDevice(peer)
+					device, discoverErr := n.discoverDevice(peerInfo, relayInfos)
 					if discoverErr != nil {
-						logger.Debugf("Failed connecting to %s, error: %s\n", peer.ID.String(), discoverErr)
+						logger.Debugf("Failed connecting to %s, error: %s", peerInfo.ID.String(), discoverErr)
 						return
 					}
+					connectedPeersLock.Lock()
+					connectedPeers[peerInfo.ID] = true
+					connectedPeersLock.Unlock()
+					newPeers++
 					logger.Infof("Connected to peer %s", device.ID.String())
-				}()
+				}(p)
 			}
 			wg.Wait()
+			findCancel()
+			if foundCount > 0 {
+				logger.Debugf("discovery: found %d peer(s) (%d new connections)", foundCount, newPeers)
+			}
 		}
 	}
 }
@@ -520,26 +743,39 @@ func (n *Node) HealthcheckDevices() {
 
 func (n *Node) UpdateDevices() {
 	var wg sync.WaitGroup
-	for _, device := range n.Devices {
+	// Check both discovered and healthy devices
+	n.DLock.RLock()
+	allDevices := make([]Device, 0, len(n.discoveredDevices)+len(n.healthyDevices))
+	for _, device := range n.discoveredDevices {
+		allDevices = append(allDevices, device)
+	}
+	for _, device := range n.healthyDevices {
+		allDevices = append(allDevices, device)
+	}
+	n.DLock.RUnlock()
+
+	for _, device := range allDevices {
 		if device.ID == n.ID() {
 			continue
 		}
 
 		wg.Add(1)
-		go func() {
+		go func(d Device) {
 			defer wg.Done()
 
-			healthCheckErr := n.healthCheckDevice(&device)
+			healthCheckErr := n.healthCheckDevice(&d)
 			if healthCheckErr != nil {
 				return
 			}
-		}()
+		}(device)
 	}
 	wg.Wait()
 }
 
 func (n *Node) GetEcho(peer peer.ID, echoCmd string) (echoData string, err error) {
-	s, err := n.Host.NewStream(n.CTX, peer, constant.StellarEchoProtocol)
+	// Allow limited connections (e.g., relay connections)
+	allowCtx := network.WithAllowLimitedConn(n.CTX, string(constant.StellarEchoProtocol))
+	s, err := n.Host.NewStream(allowCtx, peer, constant.StellarEchoProtocol)
 	if err != nil {
 		logger.Debugf("[%v] dial error: %v", echoCmd, err)
 		return
@@ -566,7 +802,9 @@ func (n *Node) GetEcho(peer peer.ID, echoCmd string) (echoData string, err error
 }
 
 func (n *Node) Ping(peer peer.ID) (err error) {
-	s, err := n.Host.NewStream(n.CTX, peer, constant.StellarEchoProtocol)
+	// Allow limited connections (e.g., relay connections)
+	allowCtx := network.WithAllowLimitedConn(n.CTX, string(constant.StellarEchoProtocol))
+	s, err := n.Host.NewStream(allowCtx, peer, constant.StellarEchoProtocol)
 	if err != nil {
 		return
 	}
@@ -593,12 +831,50 @@ func (n *Node) Ping(peer peer.ID) (err error) {
 	return
 }
 
+// Devices returns a map of healthy devices only
+func (n *Node) Devices() map[string]Device {
+	n.DLock.RLock()
+	defer n.DLock.RUnlock()
+	// Return a copy to prevent external modification
+	result := make(map[string]Device, len(n.healthyDevices))
+	for k, v := range n.healthyDevices {
+		result[k] = v
+	}
+	return result
+}
+
+// DiscoveredDevices returns a map of discovered (but not yet healthy) devices
+func (n *Node) DiscoveredDevices() map[string]Device {
+	n.DLock.RLock()
+	defer n.DLock.RUnlock()
+	// Return a copy to prevent external modification
+	result := make(map[string]Device, len(n.discoveredDevices))
+	for k, v := range n.discoveredDevices {
+		result[k] = v
+	}
+	return result
+}
+
+// GetDevice returns a healthy device by ID, or error if not found
 func (n *Node) GetDevice(id string) (device Device, err error) {
-	n.DLock.Lock()
-	device, exist := n.Devices[id]
-	n.DLock.Unlock()
+	n.DLock.RLock()
+	device, exist := n.healthyDevices[id]
+	n.DLock.RUnlock()
 	if !exist {
 		err = fmt.Errorf("device not exist: %v", id)
+		return
+	}
+
+	return device, nil
+}
+
+// GetDiscoveredDevice returns a discovered device by ID, or error if not found
+func (n *Node) GetDiscoveredDevice(id string) (device Device, err error) {
+	n.DLock.RLock()
+	device, exist := n.discoveredDevices[id]
+	n.DLock.RUnlock()
+	if !exist {
+		err = fmt.Errorf("discovered device not exist: %v", id)
 		return
 	}
 
@@ -623,4 +899,104 @@ func (n *Node) Provide(peerChan chan peer.AddrInfo) {
 			return
 		}
 	}
+}
+
+// reserveRelaySlot attempts to reserve a relay slot with the given peer
+// Returns true if reservation was successful, false otherwise
+func (n *Node) reserveRelaySlot(ctx context.Context, relayPeer peer.AddrInfo) bool {
+	resCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	_, relayErr := relayclient.Reserve(resCtx, n.Host, relayPeer)
+	if relayErr != nil {
+		return false
+	}
+
+	// Track successful reservation
+	n.relayReservationLock.Lock()
+	n.relayReservations[relayPeer.ID] = time.Now()
+	n.relayReservationLock.Unlock()
+
+	return true
+}
+
+// refreshRelayReservations periodically refreshes relay reservations before they expire
+// It refreshes reservations at 80% of the TTL to ensure they don't expire
+func (n *Node) refreshRelayReservations() {
+	// Refresh interval: 80% of TTL to ensure we refresh before expiration
+	refreshInterval := time.Duration(float64(n.relayReservationTTL) * 0.8)
+	if refreshInterval < time.Minute {
+		refreshInterval = time.Minute // Minimum 1 minute
+	}
+
+	ticker := time.NewTicker(refreshInterval)
+	defer ticker.Stop()
+
+	logger.Debugf("Starting relay reservation refresh with interval: %v (TTL: %v)", refreshInterval, n.relayReservationTTL)
+
+	for {
+		select {
+		case <-n.CTX.Done():
+			return
+		case <-ticker.C:
+			n.refreshAllRelayReservations()
+		}
+	}
+}
+
+// refreshAllRelayReservations refreshes all active relay reservations
+func (n *Node) refreshAllRelayReservations() {
+	n.relayReservationLock.RLock()
+	// Create a copy of the reservations map to avoid holding lock during refresh
+	reservations := make(map[peer.ID]time.Time, len(n.relayReservations))
+	for id, timestamp := range n.relayReservations {
+		reservations[id] = timestamp
+	}
+	n.relayReservationLock.RUnlock()
+
+	if len(reservations) == 0 {
+		return
+	}
+
+	logger.Debugf("Refreshing %d relay reservation(s)", len(reservations))
+
+	var wg sync.WaitGroup
+	for relayID := range reservations {
+		wg.Add(1)
+		go func(id peer.ID) {
+			defer wg.Done()
+
+			// Check if peer is still connected
+			if n.Host.Network().Connectedness(id) != network.Connected {
+				logger.Debugf("Relay peer %s is not connected, removing from reservations", id)
+				n.relayReservationLock.Lock()
+				delete(n.relayReservations, id)
+				n.relayReservationLock.Unlock()
+				return
+			}
+
+			// Get peer addresses
+			addrs := n.Host.Peerstore().Addrs(id)
+			if len(addrs) == 0 {
+				logger.Debugf("No addresses for relay peer %s, skipping refresh", id)
+				return
+			}
+
+			relayPeer := peer.AddrInfo{
+				ID:    id,
+				Addrs: addrs,
+			}
+
+			// Attempt to refresh reservation
+			if n.reserveRelaySlot(n.CTX, relayPeer) {
+				logger.Debugf("Successfully refreshed relay reservation with %s", id)
+			} else {
+				logger.Debugf("Failed to refresh relay reservation with %s, removing from active reservations", id)
+				n.relayReservationLock.Lock()
+				delete(n.relayReservations, id)
+				n.relayReservationLock.Unlock()
+			}
+		}(relayID)
+	}
+	wg.Wait()
 }

@@ -324,3 +324,62 @@ func AssertFalse(t *testing.T, condition bool) {
 	t.Helper()
 	require.False(t, condition)
 }
+
+// CreateMockNode creates a mock node for testing
+func CreateMockNode(t *testing.T) *MockNode {
+	t.Helper()
+	
+	// Create a mock node struct that implements the necessary interface
+	mockNode := &MockNode{
+		NodeID:         "mock-node-id",
+		Host:           TestHost(t),
+		Devices:        make(map[string]interface{}),
+		Policy:         &TestPolicy{},
+		Bootstrapper:   false,
+		RelayNode:      false,
+		ReferenceToken: "mock-token",
+	}
+	
+	return mockNode
+}
+
+// MockNode is a mock implementation of the Node struct for testing
+type MockNode struct {
+	NodeID         string
+	Host           host.Host
+	Devices        map[string]interface{}
+	Policy         *TestPolicy
+	Bootstrapper   bool
+	RelayNode      bool
+	ReferenceToken string
+}
+
+// ID method to match the expected interface
+func (m *MockNode) ID() peer.ID {
+	// Return a mock peer ID
+	_, pubKey, _ := crypto.GenerateKeyPairWithReader(crypto.Ed25519, 2048, rand.Reader)
+	peerID, _ := peer.IDFromPublicKey(pubKey)
+	return peerID
+}
+
+// Addrs method to match the expected interface
+func (m *MockNode) Addrs() []multiaddr.Multiaddr {
+	if m.Host != nil {
+		return m.Host.Addrs()
+	}
+	return []multiaddr.Multiaddr{}
+}
+
+// CreateMockProxyManager creates a mock proxy manager for testing
+func CreateMockProxyManager(t *testing.T) interface{} {
+	t.Helper()
+	
+	// Create a mock proxy manager struct
+	mockProxy := struct {
+		proxies map[uint64]interface{}
+	}{
+		proxies: make(map[uint64]interface{}),
+	}
+	
+	return &mockProxy
+}

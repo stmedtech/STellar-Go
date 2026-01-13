@@ -2,12 +2,16 @@ package policy
 
 import (
 	"fmt"
+	"os"
 	"testing"
 
+	"stellar/core/config"
+	"stellar/core/constant"
 	"stellar/pkg/testutils"
 
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestProtocolPolicy_Authenticate(t *testing.T) {
@@ -311,4 +315,131 @@ func BenchmarkProtocolPolicy_AddWhiteList(b *testing.B) {
 		deviceID := fmt.Sprintf("QmPeer%d", i)
 		policy.AddWhiteList(deviceID)
 	}
+}
+
+func TestProtocolPolicy_LoadFromConfig(t *testing.T) {
+	// Create a temporary directory for config
+	tempDir := t.TempDir()
+	originalStellarPath := constant.STELLAR_PATH
+
+	// Set up temporary stellar path
+	constant.STELLAR_PATH = tempDir
+	defer func() {
+		constant.STELLAR_PATH = originalStellarPath
+	}()
+
+	// Create config directory
+	require.NoError(t, os.MkdirAll(tempDir, 0755))
+
+	t.Run("loads whitelist from config", func(t *testing.T) {
+		// Create a config with whitelist
+		savedPeer1 := testutils.TestPeer(t)
+		savedPeer2 := testutils.TestPeer(t)
+		savedWhitelist := []string{savedPeer1.String(), savedPeer2.String()}
+
+		cfg := config.DefaultConfig()
+		cfg.WhiteList = savedWhitelist
+		require.NoError(t, config.SaveConfig(cfg))
+
+		// Create policy and load from config
+		policy := &ProtocolPolicy{
+			Enable:    true,
+			WhiteList: make([]string, 0),
+		}
+
+		policy.LoadFromConfig()
+
+		// Verify whitelist was loaded
+		assert.Equal(t, len(savedWhitelist), len(policy.WhiteList))
+		assert.Contains(t, policy.WhiteList, savedPeer1.String())
+		assert.Contains(t, policy.WhiteList, savedPeer2.String())
+	})
+
+	t.Run("bootstrappers added to existing whitelist", func(t *testing.T) {
+		// Create a config with saved whitelist
+		savedPeer1 := testutils.TestPeer(t)
+		savedPeer2 := testutils.TestPeer(t)
+		savedWhitelist := []string{savedPeer1.String(), savedPeer2.String()}
+
+		cfg := config.DefaultConfig()
+		cfg.WhiteList = savedWhitelist
+		require.NoError(t, config.SaveConfig(cfg))
+
+		// Create policy and load from config
+		policy := &ProtocolPolicy{
+			Enable:    true,
+			WhiteList: make([]string, 0),
+		}
+
+		policy.LoadFromConfig()
+
+		// Verify initial whitelist
+		assert.Equal(t, len(savedWhitelist), len(policy.WhiteList))
+
+		// Simulate adding bootstrapper (like InitDHT does)
+		bootstrapPeer := testutils.TestPeer(t)
+		err := policy.AddWhiteList(bootstrapPeer.String())
+		require.NoError(t, err)
+
+		// Verify both saved entries and bootstrapper are in whitelist
+		assert.Equal(t, len(savedWhitelist)+1, len(policy.WhiteList))
+		assert.Contains(t, policy.WhiteList, savedPeer1.String(), "Saved peer 1 should still be in whitelist")
+		assert.Contains(t, policy.WhiteList, savedPeer2.String(), "Saved peer 2 should still be in whitelist")
+		assert.Contains(t, policy.WhiteList, bootstrapPeer.String(), "Bootstrap peer should be added to whitelist")
+
+		// Verify config was updated with combined whitelist
+		cfgInstance := config.GetInstance()
+		assert.Equal(t, len(savedWhitelist)+1, len(cfgInstance.WhiteList))
+		assert.Contains(t, cfgInstance.WhiteList, savedPeer1.String())
+		assert.Contains(t, cfgInstance.WhiteList, savedPeer2.String())
+		assert.Contains(t, cfgInstance.WhiteList, bootstrapPeer.String())
+	})
+
+	t.Run("loads empty whitelist when config has none", func(t *testing.T) {
+		// Create empty config
+		cfg := config.DefaultConfig()
+		cfg.WhiteList = []string{}
+		require.NoError(t, config.SaveConfig(cfg))
+
+		// Create policy and load from config
+		policy := &ProtocolPolicy{
+			Enable:    true,
+			WhiteList: make([]string, 0),
+		}
+
+		policy.LoadFromConfig()
+
+		// Verify whitelist is empty
+		assert.Equal(t, 0, len(policy.WhiteList))
+	})
+
+	t.Run("multiple bootstrappers added to saved whitelist", func(t *testing.T) {
+		// Create a config with saved whitelist
+		savedPeer1 := testutils.TestPeer(t)
+		savedWhitelist := []string{savedPeer1.String()}
+
+		cfg := config.DefaultConfig()
+		cfg.WhiteList = savedWhitelist
+		require.NoError(t, config.SaveConfig(cfg))
+
+		// Create policy and load from config
+		policy := &ProtocolPolicy{
+			Enable:    true,
+			WhiteList: make([]string, 0),
+		}
+
+		policy.LoadFromConfig()
+
+		// Add multiple bootstrappers
+		bootstrapPeer1 := testutils.TestPeer(t)
+		bootstrapPeer2 := testutils.TestPeer(t)
+		require.NoError(t, policy.AddWhiteList(bootstrapPeer1.String()))
+		require.NoError(t, policy.AddWhiteList(bootstrapPeer2.String()))
+
+		// Verify all entries are present
+		assert.Equal(t, 3, len(policy.WhiteList))
+		assert.Contains(t, policy.WhiteList, savedPeer1.String())
+		assert.Contains(t, policy.WhiteList, bootstrapPeer1.String())
+		assert.Contains(t, policy.WhiteList, bootstrapPeer2.String())
+	})
 }

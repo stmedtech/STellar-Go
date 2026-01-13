@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  test:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    volumes:
+      - .:/app
+      - go-mod-cache:/go/pkg/mod
+    command: go test -tags conda ./... -v -timeout 10m -parallel 1
+
+volumes:
+  go-mod-cache:
+

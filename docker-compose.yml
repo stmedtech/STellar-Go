@@ -11,10 +11,9 @@ x-defaults: &defaults
 services:
   bootstrap:
     build: .
-    command: bootstrapper -port 43210 -b64privkey ${BOOTSTRAP_KEY} -relay -debug
+    command: node -bootstrapper -port 43210 -b64privkey ${BOOTSTRAP_KEY} -relay -debug
     ports:
       - 43210:43210
-      - 5001:5001
     healthcheck:
       test: [ "CMD", "ls" ]
       start_period: 5s
@@ -25,9 +24,7 @@ services:
       - ./bootstrappers.txt:/app/bootstrappers.txt
       - ./data/test:/app/data
       - ./cache/.conda:/root/.conda
-      - ./cache/stellar:/root/.local/share/Stellar
-      - ./environment.yaml:/app/environment.yaml
-      - ./test.py:/app/test.py
+      - stellar_cache:/root/.local/share/stellar
     deploy:
       resources:
         reservations:
@@ -55,3 +52,7 @@ services:
 networks:
   pnet_1:
   pnet_2:
+
+
+volumes:
+  stellar_cache:
