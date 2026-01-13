@@ -26,12 +26,17 @@ var DataDir string
 // FileTransferTimeout is the timeout for file transfer operations
 const FileTransferTimeout = 30 * time.Second
 
-func init() {
-	pwd, err := os.Getwd()
-	if err != nil {
+// InitDataDir initializes the DataDir from config.
+// If configDataDir is empty, it defaults to pwd/data.
+// This should be called before BindFileStream.
+func InitDataDir(configDataDir string) {
+	if configDataDir != "" {
+		DataDir = configDataDir
+		logger.Infof("Using configured data directory: %s", DataDir)
 		return
 	}
-	DataDir = filepath.Join(pwd, "data")
+
+	logger.Infof("Using default data directory: %s", DataDir)
 }
 
 // fileStreamHandler handles incoming libp2p streams for the file protocol.

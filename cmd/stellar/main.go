@@ -178,7 +178,7 @@ func main() {
 	args := os.Args
 	subCommand := ""
 	if len(os.Args) < 2 {
-		logger.Warn("expected 'key', 'node', 'conda' subcommands")
+		logger.Warn("expected 'key', 'node', 'conda', 'config' subcommands")
 		// os.Exit(1)
 		subCommand = "node"
 		args = os.Args[1:]
@@ -212,6 +212,8 @@ func main() {
 		nodeCommand(args)
 	case "conda":
 		condaCommand(args)
+	case "config":
+		configCommand(args)
 	default:
 		logger.Fatalf("unknown command: %s", subCommand)
 	}

@@ -43,6 +43,16 @@ type Config struct {
 	APIPort        int      `json:"api_port,omitempty"`
 	Debug          bool     `json:"debug,omitempty"`
 	WhiteList      []string `json:"whitelist,omitempty"`
+	DataDir        string   `json:"data_dir,omitempty"`
+}
+
+func defaultDataDir() string {
+	pwd, err := os.Getwd()
+	if err != nil {
+		logger.Warnf("Failed to get working directory: %v", err)
+		return ""
+	}
+	return filepath.Join(pwd, "data")
 }
 
 func DefaultConfig() *Config {
@@ -78,6 +88,7 @@ func DefaultConfig() *Config {
 		APIPort:        1524,
 		Debug:          false,
 		WhiteList:      []string{},
+		DataDir:        defaultDataDir(),
 	}
 }
 
@@ -126,7 +137,8 @@ func loadConfigFromFile() (*Config, bool, error) {
 		return nil, false, err
 	}
 
-	var config Config
+	// Start with defaults, then overlay json
+	config := *DefaultConfig()
 	if err := json.Unmarshal(data, &config); err != nil {
 		return nil, false, err
 	}

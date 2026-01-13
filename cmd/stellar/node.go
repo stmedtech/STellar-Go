@@ -5,6 +5,8 @@ import (
 	"net"
 	"stellar/core/config"
 	"stellar/core/device"
+
+	"github.com/gin-gonic/gin"
 )
 
 func GetFreePort() (port uint64, err error) {
@@ -51,6 +53,7 @@ func nodeCommand(args []string) {
 	noSocketServer := nodeCmd.Bool("no-socket", cfg.NoSocketServer, "open socket server or not")
 	apiServer := nodeCmd.Bool("api", cfg.APIServer, "open api server or not")
 	apiPort := nodeCmd.Int("api-port", cfg.APIPort, "set api server port")
+	dataDir := nodeCmd.String("data-dir", cfg.DataDir, "set data directory path (empty means pwd/data)")
 	debug := nodeCmd.Bool("debug", cfg.Debug, "debug mode")
 
 	nodeCmd.Parse(args)
@@ -84,6 +87,7 @@ func nodeCommand(args []string) {
 		cfg.APIServer = *apiServer
 		cfg.APIPort = *apiPort
 		cfg.Debug = *debug
+		cfg.DataDir = *dataDir
 		if saveErr := config.SaveConfig(cfg); saveErr != nil {
 			logger.Warnf("Failed to save config: %v", saveErr)
 		}
@@ -128,6 +132,9 @@ func nodeCommand(args []string) {
 		// Normal node functionality: discovery, API, socket server
 		device.StartDiscovery()
 
+		if !*debug {
+			gin.SetMode(gin.ReleaseMode)
+		}
 		if !*noSocketServer {
 			device.StartUnixSocket()
 		}

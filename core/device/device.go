@@ -1,6 +1,7 @@
 package device
 
 import (
+	"stellar/core/config"
 	"stellar/core/protocols/compute"
 	"stellar/core/socket"
 	"stellar/p2p/node"
@@ -76,6 +77,10 @@ func (d *Device) InitWithOptions(
 	if nodeErr != nil {
 		logger.Fatalln(nodeErr)
 	}
+
+	// Initialize file protocol data directory from config
+	cfg := config.GetInstance()
+	file.InitDataDir(cfg.DataDir)
 
 	echo.BindEchoStream(n)
 	file.BindFileStream(n)
