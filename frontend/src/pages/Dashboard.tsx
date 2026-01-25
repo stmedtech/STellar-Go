@@ -150,7 +150,7 @@ export default function Dashboard() {
             <dd className="space-y-1">
               {nodeInfo.Addresses.map((addr, idx) => (
                 <div key={idx} className="text-sm text-gray-900 font-mono bg-gray-50 p-2 rounded">
-                  {addr}
+                  {addr}/p2p/{nodeInfo.NodeID}
                 </div>
               ))}
             </dd>
