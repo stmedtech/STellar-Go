@@ -2,7 +2,7 @@
 
 from typing import Optional, Dict, Any, List
 from .utils.socket_client import UnixSocketClient
-from .utils.helpers import get_default_socket_path
+from .utils.helpers import resolve_connection_path
 from .exceptions import StellarException, ConnectionError
 
 
@@ -13,10 +13,11 @@ class APIClient:
         """Initialize API client.
         
         Args:
-            socket_path: Path to Unix socket (uses default if None)
+            socket_path: Path to Unix socket or HTTP URL (uses auto-resolution if None)
             timeout: Request timeout in seconds
         """
-        self.socket_path = socket_path or get_default_socket_path()
+        # Resolve connection path following priority: explicit -> STELLAR_NODE_URL -> socket -> HTTP
+        self.socket_path = resolve_connection_path(socket_path)
         self._client = UnixSocketClient(self.socket_path, timeout)
     
     def get(self, path: str, params: Optional[Dict[str, Any]] = None, 

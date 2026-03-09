@@ -122,27 +122,49 @@ class UnixSocketClient:
         """Initialize Unix socket client.
         
         Args:
-            socket_path: Path to the Unix socket
+            socket_path: Path to the Unix socket or HTTP URL (e.g., http://127.0.0.1:1524)
             timeout: Request timeout in seconds
         """
-        self.socket_path = socket_path
         self.timeout = timeout
         self.session = requests.Session()
         self.retry_policy = RetryPolicy()
         self.circuit_breaker = CircuitBreaker()
         
-        # Don't check socket at init - check at connection time
-        # This allows the socket to be created after client initialization
-        self.use_unix_socket = False
-        self.base_url = "http://127.0.0.1:1524"
-        self.http_adapter = HTTPAdapter()
-        self.unix_adapter = StellarAdapter(socket_path=self.socket_path, timeout=float(self.timeout))
-        
-        # Start with HTTP adapter
-        self.session.mount("http://", self.http_adapter)
+        # Check if socket_path is actually a URL
+        if socket_path.startswith(("http://", "https://")):
+            # It's a URL, use HTTP directly
+            self.socket_path = None
+            self.use_unix_socket = False
+            self.base_url = socket_path.rstrip('/')
+            self.http_adapter = HTTPAdapter()
+            self.unix_adapter = None
+            self.session.mount("http://", self.http_adapter)
+            if socket_path.startswith("https://"):
+                self.session.mount("https://", self.http_adapter)
+        else:
+            # It's a socket path
+            self.socket_path = socket_path
+            self.use_unix_socket = False
+            self.base_url = "http://127.0.0.1:1524"
+            self.http_adapter = HTTPAdapter()
+            self.unix_adapter = StellarAdapter(socket_path=self.socket_path, timeout=float(self.timeout))
+            
+            # Start with HTTP adapter
+            self.session.mount("http://", self.http_adapter)
             
     def _ensure_connection(self) -> None:
         """Ensure socket connection is healthy."""
+        # If using a URL directly, skip socket checks
+        if self.socket_path is None:
+            # Already using HTTP URL, just verify connection
+            try:
+                response = self._make_request("GET", "/health")
+                if response.status_code != 200:
+                    raise NodeNotRunningError(f"Node health check failed with status {response.status_code}")
+            except (requests.exceptions.ConnectionError, requests.exceptions.RequestException) as e:
+                raise ConnectionError(f"Connection failed to {self.base_url}: {e}") from e
+            return
+        
         # Always check socket availability at connection time
         socket_exists = os.path.exists(self.socket_path) and os.name != 'nt' if self.socket_path else False
         
